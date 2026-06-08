@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 # Champ linéaire : V = V0 + (gradients) . (x, y, z)
 TRUE_WIND_FIELD = {
     # vent moyen (m/s)
-    "U0":  10.0,    # composante Est
-    "V0": -4.0,    # composante Nord
-    "W0":  0.0,    # vitesse verticale de base
+    "U0":  5.0,    # composante Est
+    "V0":  0.0,    # composante Nord
+    "W0":  1.0,    # vitesse verticale de base
 
     # gradients horizontaux ((m/s)/km)
     "dudx":  0.0, "dudy":  0.0,
@@ -48,7 +48,7 @@ U, V, W = true_wind(X, Y, Z)
 # 2. AFFICHAGE DU CHAMP DE VENT VRAI
 # --------------------------------------------------------------------------- #
 
-afficher_champ_vrai = False  # mettre à True pour afficher le champ vrai
+afficher_champ_vrai = True  # mettre à True pour afficher le champ vrai
 
 if afficher_champ_vrai:
     fig = plt.figure()

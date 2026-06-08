@@ -80,7 +80,8 @@ thf = theta.ravel()
 phf = phi.ravel()
 zf  = z.ravel()
 vf  = vr.ravel()
- 
+
+min_n = 10  # nombre minimum de points pour faire une estimation du vent 
  
 def retrieve_wind(x0, y0, z0):
     """
@@ -96,13 +97,18 @@ def retrieve_wind(x0, y0, z0):
     ph0 = np.arcsin(z0 / r0)                     # élévation (rad)
  
     # ---- Étape 3 : sélection des mesures dans le volume ----
-    # différence angulaire en azimut (gestion du passage 0/360)
-    centre = np.array([r0, np.rad2deg(th0), np.rad2deg(ph0)]) # centre du volume d'analyse 
-    mask = (np.abs(thf - np.deg2rad(centre[1])) < np.deg2rad(D_THETA)) & \
+    centre = np.array([r0, np.rad2deg(th0), np.rad2deg(ph0)])
+
+    # écart d'azimut en gérant le passage 0/360°
+    dth = np.abs(thf - np.deg2rad(centre[1]))
+    dth = np.minimum(dth, 2 * np.pi - dth)
+
+    mask = (dth < np.deg2rad(D_THETA)) & \
            (np.abs(phf - np.deg2rad(centre[2])) < np.deg2rad(D_PHI)) & \
            (np.abs(rf - centre[0]) < D_R)
- 
     n = np.count_nonzero(mask)
+    if n < min_n:
+        return None
  
     r_sel  = rf[mask]
     th_sel = thf[mask]
@@ -113,9 +119,12 @@ def retrieve_wind(x0, y0, z0):
     G = design_matrix(r_sel, th_sel, ph_sel, x0, y0, z0)
  
     # ---- Étape 5 & 6 : formation de A X = B  et résolution ----
-    X, cond = solve(G, vr_sel)
-    print("cond =", cond)
-    print("N =", len(vr_sel))
+    try:
+        X, cond = solve(G, vr_sel)
+    except np.linalg.LinAlgError:
+        return None
+    #print("cond =", cond)
+    #print("N =", len(vr_sel))
  
     # ---- Étape 7 : reconstruction du vent au point choisi ----
 
@@ -125,12 +134,108 @@ def retrieve_wind(x0, y0, z0):
  
     return u0, v0, w0
 
-x0 = 50.0
-y0 = 30.0
-z0 = 3.0
+# --------------------------------------------------------------------------- #
+# 5. RESTITUTION POUR TOUT L'ESPACE
+# --------------------------------------------------------------------------- #
+
+def sweep_workspace(x_vals, y_vals, z_vals, **kwargs):
+    """
+    Restitue le vent sur une grille cartesienne (km).
+    Retourne 4 tableaux des points valides : xs, ys, zs, vents (Nx3).
+    """
+    xs, ys, zs, winds = [], [], [], []
+    for z0 in z_vals:
+        for y0 in y_vals:
+            for x0 in x_vals:
+                res = retrieve_wind(float(x0), float(y0), float(z0), **kwargs)
+                if res is not None:
+                    xs.append(x0); ys.append(y0); zs.append(z0)
+                    winds.append(res)
+    return (np.array(xs), np.array(ys), np.array(zs), np.array(winds))
  
-u_rec, v_rec, w_rec = retrieve_wind(x0, y0, z0)
+ 
+# Grille couvrant l'espace de travail 
+X_GRID = np.arange(-120.0, 121.0, 30.0)
+Y_GRID = np.arange(-120.0, 121.0, 30.0)
+Z_GRID = np.arange(1.0, 9.0, 2.0)
+ 
+xs, ys, zs, winds = sweep_workspace(X_GRID, Y_GRID, Z_GRID)
+print(f"Points restitues : {len(xs)} / {len(X_GRID) * len(Y_GRID) * len(Z_GRID)}")
+ 
+U_rec, V_rec, W_rec = winds[:, 0], winds[:, 1], winds[:, 2]
+ 
+# Erreur par rapport au champ vrai (validation)
+U_t, V_t, W_t = true_wind(xs, ys, zs)
+err = np.sqrt((U_rec - U_t)**2 + (V_rec - V_t)**2 + (W_rec - W_t)**2)
+print(f"Erreur vectorielle moyenne : {err.mean():.3e} m/s")
+ 
+# --------------------------------------------------------------------------- #
+# 6. COMPARAISON PAR COUCHES : (u,v) en flèches, w en couleur + profil w(z)
+# --------------------------------------------------------------------------- #
 
+X_GRID   = np.arange(-100.0, 101.0, 20.0)
+Y_GRID   = np.arange(-100.0, 101.0, 20.0)
+Z_LAYERS = [2.0, 6.0]      # couches comparées (km)
+QUIVER_SCALE = 300              # plus grand = flèches plus courtes
 
-print("VVP  :", u_rec, v_rec, w_rec)
+# --- collecte des données pour chaque couche ---
+data, w_all = {}, []
+for z0 in Z_LAYERS:
+    xr, yr, ur, vr_rec, wr = [], [], [], [], []
+    xt, yt, ut, vt, wt = [], [], [], [], []
+    for y0 in Y_GRID:
+        for x0 in X_GRID:
+            tu, tv, tw = true_wind(np.array(x0), np.array(y0), np.array(z0))
+            xt.append(x0); yt.append(y0)
+            ut.append(float(tu)); vt.append(float(tv)); wt.append(float(tw))
+            res = retrieve_wind(float(x0), float(y0), z0)
+            if res is not None:
+                xr.append(x0); yr.append(y0)
+                ur.append(res[0]); vr_rec.append(res[1]); wr.append(res[2])
+    data[z0] = (xr, yr, ur, vr_rec, wr, xt, yt, ut, vt, wt)
+    w_all += wr + wt
+
+# échelle de couleur commune et symétrique
+vmax = max(1e-6, np.max(np.abs(w_all)))
+
+# --- figure : 1 ligne par couche (quivers colorés) + 1 ligne profil ---
+n = len(Z_LAYERS)
+fig, axes = plt.subplots(n + 1, 2, figsize=(13, 5 * (n + 1)))
+
+for i, z0 in enumerate(Z_LAYERS):
+    xr, yr, ur, vr_rec, wr, xt, yt, ut, vt, wt = data[z0]
+    axL, axR = axes[i]
+
+    qL = axL.quiver(xr, yr, ur, vr_rec, wr, cmap="RdBu_r",
+                    clim=(-vmax, vmax), scale=QUIVER_SCALE)
+    axL.scatter([0], [0], color="k", marker="^", s=60)
+    axL.set_title(f"Restitué VVP — z = {z0} km ({len(xr)} pts)")
+    axL.set_xlabel("X Est (km)"); axL.set_ylabel("Y Nord (km)")
+    axL.set_aspect("equal")
+    fig.colorbar(qL, ax=axL, label="w (m/s)")
+
+    qR = axR.quiver(xt, yt, ut, vt, wt, cmap="RdBu_r",
+                    clim=(-vmax, vmax), scale=QUIVER_SCALE)
+    axR.scatter([0], [0], color="k", marker="^", s=60)
+    axR.set_title(f"Vrai champ — z = {z0} km")
+    axR.set_xlabel("X Est (km)"); axR.set_ylabel("Y Nord (km)")
+    axR.set_aspect("equal")
+    fig.colorbar(qR, ax=axR, label="w (m/s)")
+
+# --- dernière ligne : profil vertical w(z) en 2 points ---
+z_profile = np.arange(1.0, 9.0, 0.5)
+for ax, (px, py) in zip(axes[n], [(0.0, 60.0), (40.0, 40.0)]):
+    w_rec, w_true = [], []
+    for z0 in z_profile:
+        res = retrieve_wind(px, py, float(z0))
+        w_rec.append(res[2] if res is not None else np.nan)
+        w_true.append(float(true_wind(np.array(px), np.array(py), np.array(z0))[2]))
+    ax.plot(w_true, z_profile, "g-o", label="vrai w")
+    ax.plot(w_rec,  z_profile, "b--s", label="w restitué")
+    ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
+    ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")
+    ax.grid(True); ax.legend()
+
+plt.tight_layout()
+plt.show()
 
