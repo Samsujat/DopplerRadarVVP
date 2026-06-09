@@ -14,17 +14,17 @@ import matplotlib.pyplot as plt
 TRUE_WIND_FIELD = {
     # vent moyen (m/s)
     "U0":  5.0,    # composante Est
-    "V0":  0.0,    # composante Nord
+    "V0":  -4.0,    # composante Nord
     "W0":  1.0,    # vitesse verticale de base
 
     # gradients horizontaux ((m/s)/km)
-    "dudx":  0.0, "dudy":  0.0,
-    "dvdx": 0.0, "dvdy":  0.0,
+    "dudx":  0.2, "dudy":  -0.2, # dudy doit etre differents de - dvdx
+    "dvdx": 0.1, "dvdy":  0.3,
 
     # gradients verticaux ((m/s)/km)
-    "dudz":  0.0,   # cisaillement de u avec l'altitude
-    "dvdz":  0.0,   # cisaillement de v avec l'altitude
-    "dwdz":  0.0,   # la vitesse verticale croît avec l'altitude (updraft)
+    "dudz":  -0.1,   # cisaillement de u avec l'altitude
+    "dvdz":  -0.2,   # cisaillement de v avec l'altitude
+    "dwdz":  0.3,   # la vitesse verticale croît avec l'altitude (updraft)
 }
 
 

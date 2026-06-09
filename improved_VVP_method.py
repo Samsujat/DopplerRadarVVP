@@ -72,7 +72,7 @@ def solve(G, d, method="direct"):
 # Demi-largeurs du volume d'analyse
 D_R     = 10.0    # km
 D_THETA = 10.0   # deg
-D_PHI   = 15.0   # deg  (GRAND pour garder toutes les élévations)
+D_PHI   = 15.0   # deg  
  
 # Aplatissement 
 rf  = r.ravel()
@@ -129,9 +129,11 @@ def retrieve_wind(x0, y0, z0):
     # ---- Étape 7 : reconstruction du vent au point choisi ----
 
     u0, v0, w0     = X[0], X[1], X[2]
-    ux, vy, cross  = X[3], X[4], X[5]
+    ux, uy, uz  = X[3], X[4], X[5]
+    vy, vz, wz  = X[6], X[7], X[8]
+    print(f"ux={ux:.3e}, uy={uy:.3e}, uz={uz:.3e}")
+    print(f"vy={vy:.3e}, vz={vz:.3e}, wz={wz:.3e}")
 
- 
     return u0, v0, w0
 
 # --------------------------------------------------------------------------- #
@@ -237,5 +239,6 @@ for ax, (px, py) in zip(axes[n], [(0.0, 60.0), (40.0, 40.0)]):
     ax.grid(True); ax.legend()
 
 plt.tight_layout()
+plt.subplots_adjust(hspace=0.35, wspace=0.25)
 plt.show()
 
