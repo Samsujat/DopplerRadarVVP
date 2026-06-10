@@ -1,6 +1,9 @@
+
+# %% Imports
 import numpy as np
 import matplotlib.pyplot as plt
 
+# %%
 # --------------------------------------------------------------------------- #
 # 0. DATA SOURCES : REAL OR SYNTHETIC
 # --------------------------------------------------------------------------- #
@@ -53,23 +56,23 @@ if USE_REAL_DATA:
 else:
     from generate_radar_data import generate, true_wind
 
-    vr = generate()  # generate synthetic radar data (shape : (n_elv, n_azim, n_rng))
-
     # Physical coordinates of the radar (synthetic case)
     ELEVATIONS_DEG = np.array([0.5, 1.5, 2.4, 3.4, 4.3, 5.3, 6.2, 7.5, 8.7, 10.0, 12.0, 14.0, 16.7, 19.5])
     AZIMUTHS_DEG = np.arange(0.0, 360.0, 1.0)        # 360 steps, 1° step range
     RANGES_KM = np.arange(2.0, 200.0, 0.5)           # from 2 to 200 km, 500 m step range
 
+    # generate() returns a flat array -> reshape to (n_elv, n_azim, n_rng)
+    vr = generate().reshape(len(ELEVATIONS_DEG), len(AZIMUTHS_DEG), len(RANGES_KM))
+
+
+# %%
 # --------------------------------------------------------------------------- #
-# 1. RADAR COORDINATES (r, theta, phi) -> CARTESIAN COORDINATES (x, y, z)
+# 1. RADAR COORDINATES : 1D axes in radians (regular grid -> no full meshgrid)
 # --------------------------------------------------------------------------- #
 
-phi, theta, r = np.meshgrid(np.deg2rad(ELEVATIONS_DEG),np.deg2rad(AZIMUTHS_DEG),RANGES_KM,indexing="ij")
-cphi, sphi = np.cos(phi), np.sin(phi)
-sth, cth = np.sin(theta), np.cos(theta)
-x = r * sth * cphi
-y = r * cth * cphi
-z = r * sphi
+ELEV_RAD = np.deg2rad(ELEVATIONS_DEG)   # axis 0 of vr
+AZIM_RAD = np.deg2rad(AZIMUTHS_DEG)     # axis 1 of vr
+# RANGES_KM                             # axis 2 of vr
 
 # --------------------------------------------------------------------------- #
 # 2. G MATRIX CONSTRUCTION : G (N x 9) from (r, theta, phi) of a volume,
@@ -121,47 +124,43 @@ def solve(G, d, method="direct"):
 # Half-widths of the volume for selecting the data (km, deg, deg)
 D_R     = 10.0    # km
 D_THETA = 10.0   # deg
-D_PHI   = 15.0   # deg  
- 
-# Flattening
-rf  = r.ravel()
-thf = theta.ravel()
-phf = phi.ravel()
-zf  = z.ravel()
-vf  = vr.ravel()
+D_PHI   = 15.0   # deg
 
 min_n = 10  # minimum number of valid data points in the volume to attempt restitution
- 
+
 def retrieve_wind(x0, y0, z0):
 
     # ---- Step 1 : (x0, y0, z0) is given as an argument ----
- 
+
     # ---- Step 2 : convert to polar coordinates ----
     r0  = np.sqrt(x0**2 + y0**2 + z0**2)        # km
     th0 = np.arctan2(x0, y0)                     # azimut (rad)
     ph0 = np.arcsin(z0 / r0)                     # elevation (rad)
- 
+
     # ---- Step 3 : select data within the volume ----
-    centre = np.array([r0, np.rad2deg(th0), np.rad2deg(ph0)])
+    ie = np.nonzero(np.abs(ELEV_RAD - ph0) < np.deg2rad(D_PHI))[0]
 
     # azimuth distance (taking into account periodicity)
-    dth = np.abs(thf - np.deg2rad(centre[1]))
+    dth = (AZIM_RAD - th0) % (2 * np.pi)
     dth = np.minimum(dth, 2 * np.pi - dth)
+    ia = np.nonzero(dth < np.deg2rad(D_THETA))[0]
 
-    # selection mask : within half-widths in all dimensions + valid velocity
-    mask = (dth < np.deg2rad(D_THETA)) & \
-           (np.abs(phf - np.deg2rad(centre[2])) < np.deg2rad(D_PHI)) & \
-           (np.abs(rf - centre[0]) < D_R) & \
-           ~np.isnan(vf) 
-                         
-    n = np.count_nonzero(mask)
+    ir = np.nonzero(np.abs(RANGES_KM - r0) < D_R)[0]
+
+    if ie.size == 0 or ia.size == 0 or ir.size == 0:
+        return None
+
+    sub = vr[np.ix_(ie, ia, ir)]      # small sub-volume of radial velocities
+    valid = ~np.isnan(sub)
+    n = np.count_nonzero(valid)
     if n < min_n:
         return None
- 
-    r_sel  = rf[mask]
-    th_sel = thf[mask]
-    ph_sel = phf[mask]
-    vr_sel = vf[mask]
+
+    ph_sel, th_sel, r_sel = np.meshgrid(ELEV_RAD[ie], AZIM_RAD[ia], RANGES_KM[ir], indexing="ij")
+    r_sel  = r_sel[valid]
+    th_sel = th_sel[valid]
+    ph_sel = ph_sel[valid]
+    vr_sel = sub[valid]
  
     # ---- Step 4 : construction of G ----
     G = design_matrix(r_sel, th_sel, ph_sel, x0, y0, z0)
@@ -193,6 +192,7 @@ def retrieve_wind(x0, y0, z0):
 
     return u0, v0, w0
 
+# %%
 # --------------------------------------------------------------------------- #
 # 5. SWEEPING THE WORKSPACE : sweep_workspace(x_vals, y_vals, z_vals) -> (xs, ys, zs, winds)
 # --------------------------------------------------------------------------- #
@@ -221,7 +221,8 @@ if len(winds) > 0:
     U_rec, V_rec, W_rec = winds[:, 0], winds[:, 1], winds[:, 2]
 else:
     print("No valid restitutions found in the workspace. Please adjust the grid parameters or volume dimensions.")
- 
+
+# %%
 # --------------------------------------------------------------------------- #
 # 6. VISUALIZATION : 2D quiver maps + vertical profiles
 # --------------------------------------------------------------------------- #
@@ -305,3 +306,5 @@ plt.tight_layout()
 plt.subplots_adjust(hspace=0.35, wspace=0.25)
 plt.show()
 
+
+# %%
