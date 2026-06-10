@@ -1,17 +1,68 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from generate_radar_data import generate,true_wind
-
-vr = generate() #on recupère les données radar générées
 
 # --------------------------------------------------------------------------- #
-# 1. RECONSTRUCTION DES COORDONNÉES RADAR
+# 0. DATA SOURCES : REAL OR SYNTHETIC
 # --------------------------------------------------------------------------- #
 
-# Domaine de mesure du radar : 13 élévations, 360 azimuts, 96 portes (2 à 200 km)
-ELEVATIONS_DEG = np.array([0.5, 1.5, 2.4, 3.4, 4.3, 5.3, 6.2, 7.5, 8.7, 10.0, 12.0, 14.0, 16.7, 19.5])
-AZIMUTHS_DEG = np.arange(0.0, 360.0, 1.0)        # 360 rayons, pas de 1°
-RANGES_KM = np.arange(2.0, 200.0, 0.5)     # portes de 2 à 200 km, pas 500 m
+# USE_REAL_DATA = True  -> read true radar data MP-PAWR
+# USE_REAL_DATA = False -> generate_radar_data (known "true" wind field for validation)
+USE_REAL_DATA = True
+
+VERBOSE = False
+
+# Filter parameters for rejecting non-physical restitutions
+MAX_WIND = 100.0       # m/s 
+MAX_COND = None        # max conditionning (None = disabled)
+
+if USE_REAL_DATA:
+    from Data_Radar.Wada_mppawr_online import mppawr
+
+    VELOCITY_FILE = (
+        "Data_Radar/20240711_Z_V_W_HV_MTI/20240711_00_VH_MTI/"
+        "Volumes/HD-PCFSU3-A/RAW/2024.07.11/00/"
+        "20240711_000000.00-00-PPI.RAW-VH_MTI.NSK-AUTO-LEM2.suita.dat.gz"
+    )
+
+    RANGE_MAX_KM = 80.0   # km
+
+    radar = mppawr(VELOCITY_FILE, switch=False)
+    data = radar.read_data()              # (n_sect, n_elv, n_rng) = (azimuth, elevation, range)
+    n_sect, n_elv, n_rng = data.shape
+
+    # Physical coordinates of the radar from the file, in degrees and km
+    ELEVATIONS_DEG = np.asarray(radar.elv_center, dtype=float)
+    AZIMUTHS_DEG = (np.arange(n_sect) + 0.5) * (360.0 / n_sect)
+    RANGES_KM = (np.arange(n_rng) + 0.5) * radar.range_res / 1000.0
+    radar.close()
+
+    # Physical limitations
+    vr = data.astype(float)
+    vr[vr < -200.0] = np.nan
+    # Organization -> (azimuth, elevation, range) -> (elevation, azimuth, range)
+    vr = -np.transpose(vr, (1, 0, 2))
+
+    # range limitation 
+    keep = RANGES_KM <= RANGE_MAX_KM
+    RANGES_KM = RANGES_KM[keep]
+    vr = vr[:, :, keep]
+
+    true_wind = None   
+    print("True Radar Data : vr shape =", vr.shape,
+          "| valid = {:.1f} %".format(100 * np.mean(~np.isnan(vr))))
+else:
+    from generate_radar_data import generate, true_wind
+
+    vr = generate()  # generate synthetic radar data (shape : (n_elv, n_azim, n_rng))
+
+    # Physical coordinates of the radar (synthetic case)
+    ELEVATIONS_DEG = np.array([0.5, 1.5, 2.4, 3.4, 4.3, 5.3, 6.2, 7.5, 8.7, 10.0, 12.0, 14.0, 16.7, 19.5])
+    AZIMUTHS_DEG = np.arange(0.0, 360.0, 1.0)        # 360 steps, 1° step range
+    RANGES_KM = np.arange(2.0, 200.0, 0.5)           # from 2 to 200 km, 500 m step range
+
+# --------------------------------------------------------------------------- #
+# 1. RADAR COORDINATES (r, theta, phi) -> CARTESIAN COORDINATES (x, y, z)
+# --------------------------------------------------------------------------- #
 
 phi, theta, r = np.meshgrid(np.deg2rad(ELEVATIONS_DEG),np.deg2rad(AZIMUTHS_DEG),RANGES_KM,indexing="ij")
 cphi, sphi = np.cos(phi), np.sin(phi)
@@ -21,16 +72,14 @@ y = r * cth * cphi
 z = r * sphi
 
 # --------------------------------------------------------------------------- #
-# 2. CONSTRUCTION DE LA MATRICE G (N x 12)
+# 2. G MATRIX CONSTRUCTION : G (N x 9) from (r, theta, phi) of a volume,
 # --------------------------------------------------------------------------- #
 
 def design_matrix(r, theta, phi, x0, y0, z0):
-    """
-    Construit G (N x 9) à partir des points (r, theta, phi) d'un volume,
-    pour une altitude de référence z0.
-    """
+
     cphi, sphi = np.cos(phi), np.sin(phi)
     sth, cth = np.sin(theta), np.cos(theta)
+
     dx = r * sth * cphi - x0
     dy = r * cth * cphi - y0
     dz = r * sphi - z0
@@ -55,7 +104,7 @@ def design_matrix(r, theta, phi, x0, y0, z0):
 
 
 # --------------------------------------------------------------------------- #
-# 3. RÉSOLUTION DU SYSTÈME 
+# 3. SYSTEME RESOLUTION : A X = B  -> X = (A^-1) B
 # --------------------------------------------------------------------------- #
 
 def solve(G, d, method="direct"):
@@ -66,46 +115,45 @@ def solve(G, d, method="direct"):
         return X, np.linalg.cond(A)
     
 # --------------------------------------------------------------------------- #
-# 4. RESTITUTION POUR UN POINT
+# 4. OUTPUT FOR 1 POINT : retrieve_wind(x0, y0, z0) -> (u, v, w) OR None
 # --------------------------------------------------------------------------- #
 
-# Demi-largeurs du volume d'analyse
+# Half-widths of the volume for selecting the data (km, deg, deg)
 D_R     = 10.0    # km
 D_THETA = 10.0   # deg
 D_PHI   = 15.0   # deg  
  
-# Aplatissement 
+# Flattening
 rf  = r.ravel()
 thf = theta.ravel()
 phf = phi.ravel()
 zf  = z.ravel()
 vf  = vr.ravel()
 
-min_n = 10  # nombre minimum de points pour faire une estimation du vent 
+min_n = 10  # minimum number of valid data points in the volume to attempt restitution
  
 def retrieve_wind(x0, y0, z0):
-    """
-    Restitue le vent au point (x0, y0, z0).
-    Retourne (u, v, w) en m/s, ou None si pas assez de données.
-    """
+
+    # ---- Step 1 : (x0, y0, z0) is given as an argument ----
  
-    # ---- Étape 1 : (x0, y0, z0) est donné en argument ----
+    # ---- Step 2 : convert to polar coordinates ----
+    r0  = np.sqrt(x0**2 + y0**2 + z0**2)        # km
+    th0 = np.arctan2(x0, y0)                     # azimut (rad)
+    ph0 = np.arcsin(z0 / r0)                     # elevation (rad)
  
-    # ---- Étape 2 : conversion en coordonnées polaires ----
-    r0  = np.sqrt(x0**2 + y0**2 + z0**2)        # distance au radar (km)
-    th0 = np.arctan2(x0, y0)                     # azimut (rad, depuis le Nord)
-    ph0 = np.arcsin(z0 / r0)                     # élévation (rad)
- 
-    # ---- Étape 3 : sélection des mesures dans le volume ----
+    # ---- Step 3 : select data within the volume ----
     centre = np.array([r0, np.rad2deg(th0), np.rad2deg(ph0)])
 
-    # écart d'azimut en gérant le passage 0/360°
+    # azimuth distance (taking into account periodicity)
     dth = np.abs(thf - np.deg2rad(centre[1]))
     dth = np.minimum(dth, 2 * np.pi - dth)
 
+    # selection mask : within half-widths in all dimensions + valid velocity
     mask = (dth < np.deg2rad(D_THETA)) & \
            (np.abs(phf - np.deg2rad(centre[2])) < np.deg2rad(D_PHI)) & \
-           (np.abs(rf - centre[0]) < D_R)
+           (np.abs(rf - centre[0]) < D_R) & \
+           ~np.isnan(vf) 
+                         
     n = np.count_nonzero(mask)
     if n < min_n:
         return None
@@ -115,36 +163,41 @@ def retrieve_wind(x0, y0, z0):
     ph_sel = phf[mask]
     vr_sel = vf[mask]
  
-    # ---- Étape 4 : construction de G ----
+    # ---- Step 4 : construction of G ----
     G = design_matrix(r_sel, th_sel, ph_sel, x0, y0, z0)
  
-    # ---- Étape 5 & 6 : formation de A X = B  et résolution ----
+    # ---- Step 5 & 6 : formation of A X = B  and resolution ----
     try:
         X, cond = solve(G, vr_sel)
     except np.linalg.LinAlgError:
         return None
-    #print("cond =", cond)
-    #print("N =", len(vr_sel))
+    if VERBOSE:
+         print(f"Point ({x0:.1f}, {y0:.1f}, {z0:.1f}) km : n={n}, cond={cond:.2e}")
  
-    # ---- Étape 7 : reconstruction du vent au point choisi ----
-
+    # ---- Step 7 : Wind reconstruction ----
     u0, v0, w0     = X[0], X[1], X[2]
     ux, uy, uz  = X[3], X[4], X[5]
     vy, vz, wz  = X[6], X[7], X[8]
-    print(f"ux={ux:.3e}, uy={uy:.3e}, uz={uz:.3e}")
-    print(f"vy={vy:.3e}, vz={vz:.3e}, wz={wz:.3e}")
+
+    # ---- Filter out unrealistic wind estimates ----
+    # Speed excessive
+    if not np.all(np.abs([u0, v0, w0]) <= MAX_WIND):
+        return None
+    # Badly conditioned system 
+    if MAX_COND is not None and cond > MAX_COND:
+        return None
+
+    if VERBOSE:
+        print(f"ux={ux:.3e}, uy={uy:.3e}, uz={uz:.3e}")
+        print(f"vy={vy:.3e}, vz={vz:.3e}, wz={wz:.3e}")
 
     return u0, v0, w0
 
 # --------------------------------------------------------------------------- #
-# 5. RESTITUTION POUR TOUT L'ESPACE
+# 5. SWEEPING THE WORKSPACE : sweep_workspace(x_vals, y_vals, z_vals) -> (xs, ys, zs, winds)
 # --------------------------------------------------------------------------- #
 
 def sweep_workspace(x_vals, y_vals, z_vals, **kwargs):
-    """
-    Restitue le vent sur une grille cartesienne (km).
-    Retourne 4 tableaux des points valides : xs, ys, zs, vents (Nx3).
-    """
     xs, ys, zs, winds = [], [], [], []
     for z0 in z_vals:
         for y0 in y_vals:
@@ -156,40 +209,41 @@ def sweep_workspace(x_vals, y_vals, z_vals, **kwargs):
     return (np.array(xs), np.array(ys), np.array(zs), np.array(winds))
  
  
-# Grille couvrant l'espace de travail 
+# workspace grid for sweeping 
 X_GRID = np.arange(-120.0, 121.0, 30.0)
 Y_GRID = np.arange(-120.0, 121.0, 30.0)
 Z_GRID = np.arange(1.0, 9.0, 2.0)
  
 xs, ys, zs, winds = sweep_workspace(X_GRID, Y_GRID, Z_GRID)
-print(f"Points restitues : {len(xs)} / {len(X_GRID) * len(Y_GRID) * len(Z_GRID)}")
- 
-U_rec, V_rec, W_rec = winds[:, 0], winds[:, 1], winds[:, 2]
- 
-# Erreur par rapport au champ vrai (validation)
-U_t, V_t, W_t = true_wind(xs, ys, zs)
-err = np.sqrt((U_rec - U_t)**2 + (V_rec - V_t)**2 + (W_rec - W_t)**2)
-print(f"Erreur vectorielle moyenne : {err.mean():.3e} m/s")
+print(f"Restitute points : {len(xs)} / {len(X_GRID) * len(Y_GRID) * len(Z_GRID)}")
+
+if len(winds) > 0:
+    U_rec, V_rec, W_rec = winds[:, 0], winds[:, 1], winds[:, 2]
+else:
+    print("No valid restitutions found in the workspace. Please adjust the grid parameters or volume dimensions.")
  
 # --------------------------------------------------------------------------- #
-# 6. COMPARAISON PAR COUCHES : (u,v) en flèches, w en couleur + profil w(z)
+# 6. VISUALIZATION : 2D quiver maps + vertical profiles
 # --------------------------------------------------------------------------- #
 
 X_GRID   = np.arange(-100.0, 101.0, 20.0)
 Y_GRID   = np.arange(-100.0, 101.0, 20.0)
-Z_LAYERS = [2.0, 6.0]      # couches comparées (km)
-QUIVER_SCALE = 300              # plus grand = flèches plus courtes
+Z_LAYERS = [2.0, 6.0]      # selected layers (km)
+QUIVER_SCALE = 300        # scale for quiver arrows (adjust for better visualization)
 
-# --- collecte des données pour chaque couche ---
+has_true = true_wind is not None   # comparison possible only in synthetic case
+
+# --- data collection for each layer ---
 data, w_all = {}, []
 for z0 in Z_LAYERS:
     xr, yr, ur, vr_rec, wr = [], [], [], [], []
     xt, yt, ut, vt, wt = [], [], [], [], []
     for y0 in Y_GRID:
         for x0 in X_GRID:
-            tu, tv, tw = true_wind(np.array(x0), np.array(y0), np.array(z0))
-            xt.append(x0); yt.append(y0)
-            ut.append(float(tu)); vt.append(float(tv)); wt.append(float(tw))
+            if has_true:
+                tu, tv, tw = true_wind(np.array(x0), np.array(y0), np.array(z0))
+                xt.append(x0); yt.append(y0)
+                ut.append(float(tu)); vt.append(float(tv)); wt.append(float(tw))
             res = retrieve_wind(float(x0), float(y0), z0)
             if res is not None:
                 xr.append(x0); yr.append(y0)
@@ -197,16 +251,17 @@ for z0 in Z_LAYERS:
     data[z0] = (xr, yr, ur, vr_rec, wr, xt, yt, ut, vt, wt)
     w_all += wr + wt
 
-# échelle de couleur commune et symétrique
-vmax = max(1e-6, np.max(np.abs(w_all)))
+vmax = max(1e-6, np.max(np.abs(w_all))) if len(w_all) else 1.0
 
-# --- figure : 1 ligne par couche (quivers colorés) + 1 ligne profil ---
+# --- Plotting ---
 n = len(Z_LAYERS)
-fig, axes = plt.subplots(n + 1, 2, figsize=(13, 5 * (n + 1)))
+ncols = 2 if has_true else 1
+fig, axes = plt.subplots(n + 1, ncols, figsize=(6.5 * ncols, 5 * (n + 1)),
+                         squeeze=False)
 
 for i, z0 in enumerate(Z_LAYERS):
     xr, yr, ur, vr_rec, wr, xt, yt, ut, vt, wt = data[z0]
-    axL, axR = axes[i]
+    axL = axes[i][0]
 
     qL = axL.quiver(xr, yr, ur, vr_rec, wr, cmap="RdBu_r",
                     clim=(-vmax, vmax), scale=QUIVER_SCALE)
@@ -216,23 +271,31 @@ for i, z0 in enumerate(Z_LAYERS):
     axL.set_aspect("equal")
     fig.colorbar(qL, ax=axL, label="w (m/s)")
 
-    qR = axR.quiver(xt, yt, ut, vt, wt, cmap="RdBu_r",
-                    clim=(-vmax, vmax), scale=QUIVER_SCALE)
-    axR.scatter([0], [0], color="k", marker="^", s=60)
-    axR.set_title(f"Vrai champ — z = {z0} km")
-    axR.set_xlabel("X Est (km)"); axR.set_ylabel("Y Nord (km)")
-    axR.set_aspect("equal")
-    fig.colorbar(qR, ax=axR, label="w (m/s)")
+    if has_true:
+        axR = axes[i][1]
+        qR = axR.quiver(xt, yt, ut, vt, wt, cmap="RdBu_r",
+                        clim=(-vmax, vmax), scale=QUIVER_SCALE)
+        axR.scatter([0], [0], color="k", marker="^", s=60)
+        axR.set_title(f"Vrai champ — z = {z0} km")
+        axR.set_xlabel("X Est (km)"); axR.set_ylabel("Y Nord (km)")
+        axR.set_aspect("equal")
+        fig.colorbar(qR, ax=axR, label="w (m/s)")
 
-# --- dernière ligne : profil vertical w(z) en 2 points ---
+# - Vertical profiles at selected points -
 z_profile = np.arange(1.0, 9.0, 0.5)
-for ax, (px, py) in zip(axes[n], [(0.0, 60.0), (40.0, 40.0)]):
+profile_points = [(0.0, 60.0), (40.0, 40.0)]
+for col, (px, py) in enumerate(profile_points):
+    if col >= ncols:
+        break
+    ax = axes[n][col]
     w_rec, w_true = [], []
     for z0 in z_profile:
         res = retrieve_wind(px, py, float(z0))
         w_rec.append(res[2] if res is not None else np.nan)
-        w_true.append(float(true_wind(np.array(px), np.array(py), np.array(z0))[2]))
-    ax.plot(w_true, z_profile, "g-o", label="vrai w")
+        if has_true:
+            w_true.append(float(true_wind(np.array(px), np.array(py), np.array(z0))[2]))
+    if has_true:
+        ax.plot(w_true, z_profile, "g-o", label="vrai w")
     ax.plot(w_rec,  z_profile, "b--s", label="w restitué")
     ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
     ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")

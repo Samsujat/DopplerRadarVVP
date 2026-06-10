@@ -1,3 +1,5 @@
-.vscode/settings.json
+.vscode/
 __pycache__/
 test.py
+Data_Radar/
+.gitignore
