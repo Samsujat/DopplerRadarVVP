@@ -224,87 +224,62 @@ else:
 
 # %%
 # --------------------------------------------------------------------------- #
-# 6. VISUALIZATION : 2D quiver maps + vertical profiles
+# 6. VISUALIZATION : retrieved wind on 4 layers (2x2) + vertical profiles
 # --------------------------------------------------------------------------- #
 
 X_GRID   = np.arange(-100.0, 101.0, 20.0)
 Y_GRID   = np.arange(-100.0, 101.0, 20.0)
-Z_LAYERS = [2.0, 6.0]      # selected layers (km)
+Z_LAYERS = [1.0, 3.0, 5.0, 7.0]   # 4 selected layers (km), shown as a 2x2 grid
 QUIVER_SCALE = 300        # scale for quiver arrows (adjust for better visualization)
-
-has_true = true_wind is not None   # comparison possible only in synthetic case
 
 # --- data collection for each layer ---
 data, w_all = {}, []
 for z0 in Z_LAYERS:
     xr, yr, ur, vr_rec, wr = [], [], [], [], []
-    xt, yt, ut, vt, wt = [], [], [], [], []
     for y0 in Y_GRID:
         for x0 in X_GRID:
-            if has_true:
-                tu, tv, tw = true_wind(np.array(x0), np.array(y0), np.array(z0))
-                xt.append(x0); yt.append(y0)
-                ut.append(float(tu)); vt.append(float(tv)); wt.append(float(tw))
             res = retrieve_wind(float(x0), float(y0), z0)
             if res is not None:
                 xr.append(x0); yr.append(y0)
                 ur.append(res[0]); vr_rec.append(res[1]); wr.append(res[2])
-    data[z0] = (xr, yr, ur, vr_rec, wr, xt, yt, ut, vt, wt)
-    w_all += wr + wt
+    data[z0] = (xr, yr, ur, vr_rec, wr)
+    w_all += wr
 
 vmax = max(1e-6, np.max(np.abs(w_all))) if len(w_all) else 1.0
 
-# --- Plotting ---
-n = len(Z_LAYERS)
-ncols = 2 if has_true else 1
-fig, axes = plt.subplots(n + 1, ncols, figsize=(6.5 * ncols, 5 * (n + 1)),
-                         squeeze=False)
+# --- Plotting : 2x2 layers ---
+fig, axes = plt.subplots(2, 2, figsize=(13, 11))
 
-for i, z0 in enumerate(Z_LAYERS):
-    xr, yr, ur, vr_rec, wr, xt, yt, ut, vt, wt = data[z0]
-    axL = axes[i][0]
+for ax, z0 in zip(axes.ravel(), Z_LAYERS):
+    xr, yr, ur, vr_rec, wr = data[z0]
+    q = ax.quiver(xr, yr, ur, vr_rec, wr, cmap="RdBu_r",
+                  clim=(-vmax, vmax), scale=QUIVER_SCALE)
+    ax.scatter([0], [0], color="k", marker="^", s=60)
+    ax.set_title(f"Restitué VVP — z = {z0} km ({len(xr)} pts)")
+    ax.set_xlabel("X Est (km)"); ax.set_ylabel("Y Nord (km)")
+    ax.set_xlim(X_GRID[0] - 10, X_GRID[-1] + 10)
+    ax.set_ylim(Y_GRID[0] - 10, Y_GRID[-1] + 10)
+    ax.set_aspect("equal")
+    fig.colorbar(q, ax=ax, label="w (m/s)")
 
-    qL = axL.quiver(xr, yr, ur, vr_rec, wr, cmap="RdBu_r",
-                    clim=(-vmax, vmax), scale=QUIVER_SCALE)
-    axL.scatter([0], [0], color="k", marker="^", s=60)
-    axL.set_title(f"Restitué VVP — z = {z0} km ({len(xr)} pts)")
-    axL.set_xlabel("X Est (km)"); axL.set_ylabel("Y Nord (km)")
-    axL.set_aspect("equal")
-    fig.colorbar(qL, ax=axL, label="w (m/s)")
+plt.tight_layout()
+plt.subplots_adjust(hspace=0.3, wspace=0.25)
 
-    if has_true:
-        axR = axes[i][1]
-        qR = axR.quiver(xt, yt, ut, vt, wt, cmap="RdBu_r",
-                        clim=(-vmax, vmax), scale=QUIVER_SCALE)
-        axR.scatter([0], [0], color="k", marker="^", s=60)
-        axR.set_title(f"Vrai champ — z = {z0} km")
-        axR.set_xlabel("X Est (km)"); axR.set_ylabel("Y Nord (km)")
-        axR.set_aspect("equal")
-        fig.colorbar(qR, ax=axR, label="w (m/s)")
-
-# - Vertical profiles at selected points -
+# --- Vertical profiles at selected points ---
 z_profile = np.arange(1.0, 9.0, 0.5)
 profile_points = [(0.0, 60.0), (40.0, 40.0)]
-for col, (px, py) in enumerate(profile_points):
-    if col >= ncols:
-        break
-    ax = axes[n][col]
-    w_rec, w_true = [], []
+fig2, axes2 = plt.subplots(1, len(profile_points), figsize=(6 * len(profile_points), 5))
+
+for ax, (px, py) in zip(np.atleast_1d(axes2), profile_points):
+    w_rec = []
     for z0 in z_profile:
         res = retrieve_wind(px, py, float(z0))
         w_rec.append(res[2] if res is not None else np.nan)
-        if has_true:
-            w_true.append(float(true_wind(np.array(px), np.array(py), np.array(z0))[2]))
-    if has_true:
-        ax.plot(w_true, z_profile, "g-o", label="vrai w")
-    ax.plot(w_rec,  z_profile, "b--s", label="w restitué")
+    ax.plot(w_rec, z_profile, "b--s", label="w restitué")
     ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
     ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")
     ax.grid(True); ax.legend()
 
 plt.tight_layout()
-plt.subplots_adjust(hspace=0.35, wspace=0.25)
 plt.show()
 
-
-# %%
