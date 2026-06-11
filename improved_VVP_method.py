@@ -16,7 +16,7 @@ USE_REAL_DATA = True
 VERBOSE = False
 
 # Filter parameters for rejecting non-physical restitutions
-MAX_WIND = 100.0       # m/s 
+MAX_WIND = 100        # m/s 
 MAX_COND = None        # max conditionning (None = disabled)
 
 if USE_REAL_DATA:
@@ -88,20 +88,20 @@ def design_matrix(r, theta, phi, x0, y0, z0):
     dy = r * cth * cphi - y0
     dz = r * sphi - z0
  
-    G = np.empty((r.size, 9))
+    G = np.empty((r.size, 6))
     G[:, 0] = sth * cphi              # df1 -> u0
     G[:, 1] = cth * cphi              # df2 -> v0
     G[:, 2] = sphi                    # df3 -> w0 
 
     G[:, 3] = dx * sth * cphi         # df4 -> u'x
-    G[:, 4] = dy * sth * cphi         # df5 -> u'y
-    G[:, 5] = dz * sth * cphi         # df6 -> u'z
+    #G[:, 4] = dy * sth * cphi         # df5 -> u'y
+    #G[:, 5] = dz * sth * cphi         # df6 -> u'z
 
     #G[:, 6] = dx * cth * cphi         # df7 -> v'x  
-    G[:, 6] = dy * cth * cphi         # df8 -> v'y
-    G[:, 7] = dz * cth * cphi         # df9 -> v'z
+    G[:, 4] = dy * cth * cphi         # df8 -> v'y
+    #G[:, 7] = dz * cth * cphi         # df9 -> v'z
 
-    G[:, 8] = dz * sphi               # df10 -> w'z  
+    G[:, 5] = dz * sphi               # df10 -> w'z  
     #G[:, 10] = dy * sphi              # df11 -> w'y  
     #G[:, 11] = dx * sphi              # df12 -> w'x  
     return G
@@ -111,12 +111,16 @@ def design_matrix(r, theta, phi, x0, y0, z0):
 # 3. SYSTEME RESOLUTION : A X = B  -> X = (A^-1) B
 # --------------------------------------------------------------------------- #
 
-def solve(G, d, method="ridge", lam=0.1):
+def solve(G, d, method="direct", lam=0.1, rcond=1e-10):
     if method == "direct":
         A = np.dot(G.T, G)
         B = np.dot(G.T, d)
         X = np.linalg.solve(A, B)
         return X, np.linalg.cond(A)
+    if method == "svd":
+        X, _res, _rank, sv = np.linalg.lstsq(G, d, rcond=rcond)
+        cond = sv[0] / sv[-1] if sv[-1] > 0 else np.inf
+        return X, cond
     if method == "ridge":
         U, s, Vt = np.linalg.svd(G, full_matrices=False)
         f = s / (s**2 + lam**2)            # facteurs de filtre de Tikhonov
@@ -133,7 +137,7 @@ D_R     = 10.0    # km
 D_THETA = 10.0   # deg
 D_PHI   = 15.0   # deg
 
-min_n = 30  # minimum number of valid data points in the volume to attempt restitution
+min_n = 10  # minimum number of valid data points in the volume to attempt restitution
 
 def retrieve_wind(x0, y0, z0):
 
@@ -184,11 +188,11 @@ def retrieve_wind(x0, y0, z0):
     u0, v0, w0     = X[0], X[1], X[2]
     #ux, uy, uz  = X[3], X[4], X[5]
     #vy, vz  = X[6], X[7]
-    wz = X[8]
+    #wz = X[5]  # w'z
 
     # ---- Filter out unrealistic wind estimates ----
     # Speed excessive
-    if not np.all(np.abs([u0, v0, w0]) <= MAX_WIND):
+    if MAX_WIND is not None and not np.all(np.abs([u0, v0, w0]) <= MAX_WIND):
         return None
     # Badly conditioned system
     if MAX_COND is not None and cond > MAX_COND:
@@ -198,7 +202,7 @@ def retrieve_wind(x0, y0, z0):
         print(f"ux={ux:.3e}, uy={uy:.3e}, uz={uz:.3e}")
         print(f"vy={vy:.3e}, vz={vz:.3e}, wz={wz:.3e}")
 
-    return u0, v0, w0, wz
+    return u0, v0, w0
 
 # %%
 # --------------------------------------------------------------------------- #
@@ -235,97 +239,90 @@ else:
 # 6. VISUALIZATION : retrieved wind on 4 layers (2x2) + vertical profiles
 # --------------------------------------------------------------------------- #
 
-X_GRID   = np.arange(-90.0, 90.0, 5.0)
-Y_GRID   = np.arange(-90.0, 90.0, 5.0)
-Z_LAYERS = [1.0, 3.0, 5.0, 7.0]   # 4 selected layers (km), shown as a 2x2 grid
+length_scale = 45  # km
+X_GRID  = np.arange(-length_scale, length_scale, 5.0)
+Y_GRID  = np.arange(-length_scale, length_scale, 5.0)
+Z_LAYER = 5.0             # altitude of the displayed layer (km)
 QUIVER_SCALE = 40         # scale for unit-length quiver arrows
 
-# --- data collection for each layer : 2D grids (NaN = no retrieval) ---
-data = {}
-for z0 in Z_LAYERS:
-    U = np.full((len(Y_GRID), len(X_GRID)), np.nan)
-    V = np.full((len(Y_GRID), len(X_GRID)), np.nan)
-    for iy, y0 in enumerate(Y_GRID):
-        for ix, x0 in enumerate(X_GRID):
-            res = retrieve_wind(float(x0), float(y0), z0)
-            if res is not None:
-                U[iy, ix] = res[0]
-                V[iy, ix] = res[1]
-    data[z0] = (U, V)
+# --- data collection : 2D grids (NaN = no retrieval) ---
+U = np.full((len(Y_GRID), len(X_GRID)), np.nan)
+V = np.full((len(Y_GRID), len(X_GRID)), np.nan)
+for iy, y0 in enumerate(Y_GRID):
+    for ix, x0 in enumerate(X_GRID):
+        res = retrieve_wind(float(x0), float(y0), Z_LAYER)
+        if res is not None:
+            U[iy, ix] = res[0]
+            V[iy, ix] = res[1]
 
-# --- Plotting : 2x2 layers ---
-fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+# --- Plotting ---
+fig, ax = plt.subplots(figsize=(8, 7))
 
 XX, YY = np.meshgrid(X_GRID, Y_GRID)
-# common color scale for the 4 layers
-all_speeds = np.concatenate([np.hypot(U, V).ravel() for U, V in data.values()])
-SPEED_MAX = np.nanmax(all_speeds) if np.any(~np.isnan(all_speeds)) else 1.0
+speed = np.hypot(U, V)
+n_pts = int(np.count_nonzero(~np.isnan(speed)))
+SPEED_MAX = np.nanmax(speed) if np.any(~np.isnan(speed)) else 1.0
+
+pm = ax.pcolormesh(XX, YY, speed, cmap="YlOrRd", alpha=0.65,
+                   shading="nearest", vmin=0.0, vmax=SPEED_MAX)
+fig.colorbar(pm, ax=ax, label="|V| (m/s)")
+
+# unit-length arrows : direction only, magnitude is in the background color
+norm = np.where(speed > 0, speed, np.nan)
+ax.quiver(XX, YY, U / norm, V / norm, scale=QUIVER_SCALE,
+          width=0.003, color="k")
+ax.scatter([0], [0], color="k", marker="^", s=60)
 
 # Radar visibility at altitude z : annulus bounded by max range / lowest
-# elevation (outer) and the cone of silence at highest elevation (inner)
 R_MAX = RANGES_KM[-1]
 ELV_MIN_RAD, ELV_MAX_RAD = ELEV_RAD.min(), ELEV_RAD.max()
 circle_th = np.linspace(0.0, 2.0 * np.pi, 200)
 
-for ax, z0 in zip(axes.ravel(), Z_LAYERS):
-    U, V = data[z0]
-    speed = np.hypot(U, V)
-    n_pts = int(np.count_nonzero(~np.isnan(speed)))
-
-    pm = ax.pcolormesh(XX, YY, speed, cmap="YlOrRd", alpha=0.65,
-                       shading="nearest", vmin=0.0, vmax=SPEED_MAX)
-    fig.colorbar(pm, ax=ax, label="|V| (m/s)")
-
-    # unit-length arrows : direction only, magnitude is in the background color
-    norm = np.where(speed > 0, speed, np.nan)
-    ax.quiver(XX, YY, U / norm, V / norm, scale=QUIVER_SCALE,
-              width=0.003, color="k")
-    ax.scatter([0], [0], color="k", marker="^", s=60)
-
-    s_outer = np.sqrt(max(R_MAX**2 - z0**2, 0.0))
-    if ELV_MIN_RAD > 0:   # lowest-beam cap only meaningful for positive elevation
-        s_outer = min(s_outer, z0 / np.tan(ELV_MIN_RAD))
-    s_inner = z0 / np.tan(ELV_MAX_RAD)
-    ax.plot(s_outer * np.cos(circle_th), s_outer * np.sin(circle_th),
-            "r-", lw=1.3, label="limite visibilité radar")
-    if s_inner < s_outer:
-        ax.plot(s_inner * np.cos(circle_th), s_inner * np.sin(circle_th),
-                "r--", lw=1.0, label="cône de silence")
-    ax.legend(loc="upper right", fontsize=8)
-    ax.set_title(f"Restitué VVP — z = {z0} km ({n_pts} pts)")
-    ax.set_xlabel("X Est (km)"); ax.set_ylabel("Y Nord (km)")
-    ax.set_xlim(X_GRID[0] - 10, X_GRID[-1] + 10)
-    ax.set_ylim(Y_GRID[0] - 10, Y_GRID[-1] + 10)
-    ax.set_aspect("equal")
+s_outer = np.sqrt(max(R_MAX**2 - Z_LAYER**2, 0.0))
+if ELV_MIN_RAD > 0:   # lowest-beam cap only meaningful for positive elevation
+    s_outer = min(s_outer, Z_LAYER / np.tan(ELV_MIN_RAD))
+s_inner = Z_LAYER / np.tan(ELV_MAX_RAD)
+ax.plot(s_outer * np.cos(circle_th), s_outer * np.sin(circle_th),
+        "r-", lw=1.3, label="limite visibilité radar")
+ax.legend(loc="upper right", fontsize=8)
+ax.set_title(f"VVP — z = {Z_LAYER} km ({n_pts} pts)")
+ax.set_xlabel("X East (km)"); ax.set_ylabel("Y North (km)")
+ax.set_xlim(X_GRID[0] - 10, X_GRID[-1] + 10)
+ax.set_ylim(Y_GRID[0] - 10, Y_GRID[-1] + 10)
+ax.set_aspect("equal")
 
 plt.tight_layout()
-plt.subplots_adjust(hspace=0.3, wspace=0.25)
 
 # --- Vertical profiles at selected points ---
-z_profile = np.arange(1.0, 9.0, 0.5)
-profile_points = [(0.0, 60.0), (40.0, 40.0)]
-fig2, axes2 = plt.subplots(1, len(profile_points), figsize=(6 * len(profile_points), 5))
 
-for ax, (px, py) in zip(np.atleast_1d(axes2), profile_points):
-    w_rec, wz_rec = [], []
-    for z0 in z_profile:
-        res = retrieve_wind(px, py, float(z0))
-        w_rec.append(res[2] if res is not None else np.nan)
-        wz_rec.append(res[3] if res is not None else np.nan)
-    line_w, = ax.plot(w_rec, z_profile, "b--s", label="w restitué")
-    ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
-    ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")
-    ax.grid(True)
+Z_PROFILE_SHOW = False  # set to False to hide the vertical profiles
 
-    # w'z (s^-1) on a secondary x-axis: different unit and magnitude than w
-    ax2 = ax.twiny()
-    line_wz, = ax2.plot(wz_rec, z_profile, "r--o", label="w'z restitué")
-    ax2.set_xlabel("w'z (s$^{-1}$)", color="r")
-    ax2.tick_params(axis="x", labelcolor="r")
+if Z_PROFILE_SHOW:
+    z_profile = np.arange(1.0, 9.0, 0.5)
+    profile_points = [(0.0, 60.0), (40.0, 40.0)]
+    fig2, axes2 = plt.subplots(1, len(profile_points), figsize=(6 * len(profile_points), 5))
 
-    ax.legend(handles=[line_w, line_wz], loc="best")
+    for ax, (px, py) in zip(np.atleast_1d(axes2), profile_points):
+        w_rec, wz_rec = [], []
+        for z0 in z_profile:
+            res = retrieve_wind(px, py, float(z0))
+            w_rec.append(res[2] if res is not None else np.nan)
+            wz_rec.append(res[3] if res is not None else np.nan)
+        line_w, = ax.plot(w_rec, z_profile, "b--s", label="w restitué")
+        ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
+        ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")
+        ax.grid(True)
 
-plt.tight_layout()
+        # w'z on a secondary x-axis: different unit and magnitude than w
+        ax2 = ax.twiny()
+        line_wz, = ax2.plot(wz_rec, z_profile, "r--o", label="w'z restitué")
+        ax2.set_xlabel("w'z", color="r")
+        ax2.tick_params(axis="x", labelcolor="r")
+
+        ax.legend(handles=[line_w, line_wz], loc="best")
+
+    plt.tight_layout()
+#plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_6P1.png", dpi=300)
 plt.show()
 
 # %%
@@ -335,33 +332,40 @@ plt.show()
 # Requires the project .venv (Python 3.12 + arm_pyart) :
 # in VSCode, select the ".venv" interpreter/kernel for this file.
 
-PPI_SWEEPS = [2, 4, 6, 8]   # indices of the elevation sweeps to display (0 .. n_elv-1)
-VEL_LIM = 30.0                 # color scale limit (m/s)
+SHOW_PPI = False  # set to True to display the PPI plots of the raw radial velocity data using Py-ART
 
-n_elv, n_azim, n_rng = vr.shape
+if SHOW_PPI:
+    PPI_ELEVATION_DEG = 5.47   # desired elevation (deg) : nearest available sweep is shown
+    VEL_LIM = 30.0            # color scale limit (m/s)
 
-# Build a Py-ART Radar object from the (elevation, azimuth, range) cube
-radar_ppi = pyart.testing.make_empty_ppi_radar(n_rng, n_azim, n_elv)
-radar_ppi.range["data"] = RANGES_KM * 1000.0                       # m
-radar_ppi.azimuth["data"] = np.tile(AZIMUTHS_DEG, n_elv)
-radar_ppi.elevation["data"] = np.repeat(ELEVATIONS_DEG, n_azim)
-radar_ppi.fixed_angle["data"] = ELEVATIONS_DEG.copy()
-radar_ppi.fields["velocity"] = {
-    "data": np.ma.masked_invalid(vr.reshape(n_elv * n_azim, n_rng)),
-    "units": "m/s",
-    "long_name": "Radial velocity (towards radar positive)",
-    "standard_name": "radial_velocity",
-}
+    n_elv, n_azim, n_rng = vr.shape
 
-display = pyart.graph.RadarDisplay(radar_ppi)
-fig3, axes3 = plt.subplots(2, 2, figsize=(13, 11))
-for ax, sw in zip(axes3.ravel(), PPI_SWEEPS):
-    display.plot_ppi("velocity", sweep=sw, ax=ax, fig=fig3,
+    # Build a Py-ART Radar object from the (elevation, azimuth, range) cube
+    radar_ppi = pyart.testing.make_empty_ppi_radar(n_rng, n_azim, n_elv)
+    radar_ppi.range["data"] = RANGES_KM * 1000.0                       # m
+    radar_ppi.azimuth["data"] = np.tile(AZIMUTHS_DEG, n_elv)
+    radar_ppi.elevation["data"] = np.repeat(ELEVATIONS_DEG, n_azim)
+    radar_ppi.fixed_angle["data"] = ELEVATIONS_DEG.copy()
+    radar_ppi.fields["velocity"] = {
+        "data": np.ma.masked_invalid(vr.reshape(n_elv * n_azim, n_rng)),
+        "units": "m/s",
+        "long_name": "Radial velocity (towards radar positive)",
+        "standard_name": "radial_velocity",
+    }
+
+    # nearest available sweep to the requested elevation
+    sw = int(np.argmin(np.abs(ELEVATIONS_DEG - PPI_ELEVATION_DEG)))
+    print(f"PPI : élévation demandée {PPI_ELEVATION_DEG:.1f}° -> sweep {sw} ({ELEVATIONS_DEG[sw]:.2f}°)")
+
+    display = pyart.graph.RadarDisplay(radar_ppi)
+    fig3, ax3 = plt.subplots(figsize=(8, 7))
+    display.plot_ppi("velocity", sweep=sw, ax=ax3, fig=fig3,
                      vmin=-VEL_LIM, vmax=VEL_LIM, cmap="RdBu_r",
                      colorbar_label="vr (m/s)",
-                     title=f"PPI vitesse radiale — élévation {ELEVATIONS_DEG[sw]:.1f}°")
-    display.plot_range_rings([20, 40, 60, 80], ax=ax, lw=0.5, ls="--")
-    ax.set_aspect("equal")
+                     title=f"PPI vitesse radiale — élévation {ELEVATIONS_DEG[sw]:.2f}°")
+    display.plot_range_rings([20, 40, 60, 80], ax=ax3, lw=0.5, ls="--")
+    ax3.set_aspect("equal")
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
+# %%

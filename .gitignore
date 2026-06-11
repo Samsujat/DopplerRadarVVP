@@ -4,3 +4,8 @@ __pycache__/
 test.py
 Data_Radar/
 .gitignore
+wind_restitution_vvp_5.0km_3P.png
+wind_restitution_vvp_5.0km_4P1.png
+wind_restitution_vvp_5.0km_5P1.png
+wind_restitution_vvp_5.0km_6P1.png
+diag_holes.png
