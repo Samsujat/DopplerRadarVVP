@@ -16,7 +16,8 @@ USE_REAL_DATA = True
 VERBOSE = False
 
 # Filter parameters for rejecting non-physical restitutions
-MAX_WIND = 100        # m/s 
+# MAX_WIND is set after data loading : a retrieved wind cannot legitimately
+# exceed the radial velocities it is fitted on (margin 1.5x on the p99.9)
 MAX_COND = None        # max conditionning (None = disabled)
 
 if USE_REAL_DATA:
@@ -65,6 +66,9 @@ else:
     # generate() returns a flat array -> reshape to (n_elv, n_azim, n_rng)
     vr = generate().reshape(len(ELEVATIONS_DEG), len(AZIMUTHS_DEG), len(RANGES_KM))
 
+# Data-driven threshold for rejecting diverging fits (aliasing, clutter...)
+MAX_WIND = 1.5 * np.nanpercentile(np.abs(vr), 99.9)   # m/s
+print(f"MAX_WIND = {MAX_WIND:.1f} m/s (1.5 x p99.9 des |vr|)")
 
 # %%
 # --------------------------------------------------------------------------- #
@@ -88,22 +92,22 @@ def design_matrix(r, theta, phi, x0, y0, z0):
     dy = r * cth * cphi - y0
     dz = r * sphi - z0
  
-    G = np.empty((r.size, 6))
+    G = np.empty((r.size, 12))
     G[:, 0] = sth * cphi              # df1 -> u0
     G[:, 1] = cth * cphi              # df2 -> v0
     G[:, 2] = sphi                    # df3 -> w0 
 
     G[:, 3] = dx * sth * cphi         # df4 -> u'x
-    #G[:, 4] = dy * sth * cphi         # df5 -> u'y
-    #G[:, 5] = dz * sth * cphi         # df6 -> u'z
+    G[:, 4] = dy * sth * cphi         # df5 -> u'y
+    G[:, 5] = dz * sth * cphi         # df6 -> u'z
 
-    #G[:, 6] = dx * cth * cphi         # df7 -> v'x  
-    G[:, 4] = dy * cth * cphi         # df8 -> v'y
-    #G[:, 7] = dz * cth * cphi         # df9 -> v'z
+    G[:, 6] = dx * cth * cphi         # df7 -> v'x  
+    G[:, 7] = dy * cth * cphi         # df8 -> v'y
+    G[:, 8] = dz * cth * cphi         # df9 -> v'z
 
-    G[:, 5] = dz * sphi               # df10 -> w'z  
-    #G[:, 10] = dy * sphi              # df11 -> w'y  
-    #G[:, 11] = dx * sphi              # df12 -> w'x  
+    G[:, 9] = dz * sphi               # df10 -> w'z  
+    G[:, 10] = dy * sphi              # df11 -> w'y  
+    G[:, 11] = dx * sphi              # df12 -> w'x  
     return G
 
 
@@ -192,7 +196,9 @@ def retrieve_wind(x0, y0, z0):
 
     # ---- Filter out unrealistic wind estimates ----
     # Speed excessive
-    if MAX_WIND is not None and not np.all(np.abs([u0, v0, w0]) <= MAX_WIND):
+    # only horizontal components : w0 is poorly constrained (low elevations)
+    # and would reject most points, while the plots only use u and v
+    if MAX_WIND is not None and not np.all(np.abs([u0, v0]) <= MAX_WIND):
         return None
     # Badly conditioned system
     if MAX_COND is not None and cond > MAX_COND:
@@ -322,7 +328,7 @@ if Z_PROFILE_SHOW:
         ax.legend(handles=[line_w, line_wz], loc="best")
 
     plt.tight_layout()
-#plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_6P1.png", dpi=300)
+plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_12P.png", dpi=300)
 plt.show()
 
 # %%
