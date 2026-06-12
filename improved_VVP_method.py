@@ -92,22 +92,22 @@ def design_matrix(r, theta, phi, x0, y0, z0):
     dy = r * cth * cphi - y0
     dz = r * sphi - z0
  
-    G = np.empty((r.size, 12))
+    G = np.empty((r.size, 6))
     G[:, 0] = sth * cphi              # df1 -> u0
     G[:, 1] = cth * cphi              # df2 -> v0
     G[:, 2] = sphi                    # df3 -> w0 
 
     G[:, 3] = dx * sth * cphi         # df4 -> u'x
-    G[:, 4] = dy * sth * cphi         # df5 -> u'y
-    G[:, 5] = dz * sth * cphi         # df6 -> u'z
+    #G[:, 4] = dy * sth * cphi         # df5 -> u'y
+    #G[:, 5] = dz * sth * cphi         # df6 -> u'z
 
-    G[:, 6] = dx * cth * cphi         # df7 -> v'x  
-    G[:, 7] = dy * cth * cphi         # df8 -> v'y
-    G[:, 8] = dz * cth * cphi         # df9 -> v'z
+    #G[:, 6] = dx * cth * cphi         # df7 -> v'x  
+    G[:, 4] = dy * cth * cphi         # df8 -> v'y
+    #G[:, 8] = dz * cth * cphi         # df9 -> v'z
 
-    G[:, 9] = dz * sphi               # df10 -> w'z  
-    G[:, 10] = dy * sphi              # df11 -> w'y  
-    G[:, 11] = dx * sphi              # df12 -> w'x  
+    G[:, 5] = dz * sphi               # df10 -> w'z  
+    #G[:, 10] = dy * sphi              # df11 -> w'y  
+    #G[:, 11] = dx * sphi              # df12 -> w'x  
     return G
 
 
@@ -137,7 +137,7 @@ def solve(G, d, method="direct", lam=0.1, rcond=1e-10):
 # --------------------------------------------------------------------------- #
 
 # Half-widths of the volume for selecting the data (km, deg, deg)
-D_R     = 10.0    # km
+D_R     = 10.0  # km
 D_THETA = 10.0   # deg
 D_PHI   = 15.0   # deg
 
@@ -328,7 +328,7 @@ if Z_PROFILE_SHOW:
         ax.legend(handles=[line_w, line_wz], loc="best")
 
     plt.tight_layout()
-plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_12P.png", dpi=300)
+#plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_12P.png", dpi=300)
 plt.show()
 
 # %%
