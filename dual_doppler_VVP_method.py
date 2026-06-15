@@ -30,11 +30,7 @@ BETA_MIN_DEG = 25.0   # minimum beam-crossing angle (lobes) or the 2x2 system is
 if USE_REAL_DATA:
     from Data_Radar.Wada_mppawr_online import mppawr
 
-    VELOCITY_FILE_1 = (
-        "Data_Radar/20240711_Z_V_W_HV_MTI/20240711_00_VH_MTI/"
-        "Volumes/HD-PCFSU3-A/RAW/2024.07.11/00/"
-        "20240711_000000.00-00-PPI.RAW-VH_MTI.NSK-AUTO-LEM2.suita.dat.gz"
-    )
+    VELOCITY_FILE_1 = None   # <-- file of the FIRST radar
     VELOCITY_FILE_2 = None   # <-- file of the SECOND radar
 
     RANGE_MAX_KM = 80.0
@@ -62,9 +58,7 @@ if USE_REAL_DATA:
           "| valid = {:.1f} %".format(100 * np.mean(~np.isnan(vr2))))
 
 else:
-    from generate_dual_radar_data import (generate, true_wind, NOISE_STD,
-                                          VORTEX_CENTER, ELEVATIONS_DEG,
-                                          AZIMUTHS_DEG, RANGES_KM)
+    from generate_dual_radar_data import (generate, true_wind, NOISE_STD, VORTEX_CENTER, ELEVATIONS_DEG, AZIMUTHS_DEG, RANGES_KM)
 
     # Polar sampling geometry of both radars (defined in the generator)
     ELEV1_DEG = ELEV2_DEG = ELEVATIONS_DEG
@@ -80,22 +74,23 @@ else:
 # 1. CARTESIAN ANALYSIS GRID 
 # --------------------------------------------------------------------------- #
 
+# Cartesian grid (x,y,z) 
 DXY, DZ = 2.0, 1.0                      # horizontal / vertical spacing (km)
 X_GRID = np.arange(6.0, 34.1, DXY)
-Y_GRID = np.arange(28.0, 56.1, DXY)    # NORTHERN lobe of the radar pair
+Y_GRID = np.arange(6.0, 56.1, DXY)  
 Z_GRID = np.arange(0.5, 9.6, DZ)
 NX, NY, NZ = len(X_GRID), len(Y_GRID), len(Z_GRID)
 
 XX, YY, ZZ = np.meshgrid(X_GRID, Y_GRID, Z_GRID, indexing="ij")  # (NX,NY,NZ)
 print(f"Grid : {NX} x {NY} x {NZ} = {NX*NY*NZ} points, "
-      f"dx={DXY} km, dz={DZ} km")
+      f"dx=dy={DXY} km, dz={DZ} km")
 
 # %%
 # --------------------------------------------------------------------------- #
 # 2. CRESSMAN INTERPOLATION 
 # --------------------------------------------------------------------------- #
 
-R_INFLUENCE = 1             # influence radius R
+R_INFLUENCE = 1             # radius R of the influence sphere for Cressman interpolation (km)
 MIN_OBS = 4                 # minimum number of echoes inside the influence sphere
 
 # Converts polar coordinates (elev, azim, rng) to Cartesian (x,y,z) for a radar
@@ -114,9 +109,14 @@ def polar_to_xyz(radar_pos, elev_deg, azim_deg, rng_km):
 
 # Cressman interpolation of the radial velocity vr onto the Cartesian grid (XX, YY, ZZ)
 def cressman_interp(radar_pos, vr, elev_deg, azim_deg, rng_km):
+
     # Convert polar coordinates and select valid points 
     px, py, pz = polar_to_xyz(radar_pos, elev_deg, azim_deg, rng_km)
+
+    # flatten vr
     val = vr.ravel()
+
+    # select valid points
     ok = np.isfinite(val)
     px, py, pz, val = px[ok], py[ok], pz[ok], val[ok]
 
@@ -128,13 +128,16 @@ def cressman_interp(radar_pos, vr, elev_deg, azim_deg, rng_km):
     # Cressman interpolation formula : weights = (R^2 - d^2) / (R^2 + d^2)
     out = np.full(grid_pts.shape[0], np.nan)
     for i, idx in enumerate(neigh):
+        # skip points with too few neighbors
         if len(idx) < MIN_OBS:
             continue
+        # compute squared distances to neighbors
         d2 = np.sum((tree.data[idx] - grid_pts[i])**2, axis=1)
         wgt = (R_INFLUENCE**2 - d2) / (R_INFLUENCE**2 + d2)
-        sw = wgt.sum()
-        if sw > 0:
-            out[i] = np.dot(wgt, val[idx]) / sw
+        sum_w = wgt.sum()
+        # in case of only point at R distance, wgt=0 -> use uniform weights
+        if sum_w > 0:
+            out[i] = np.dot(wgt, val[idx]) / sum_w
     return out.reshape(NX, NY, NZ)
 
 print("Cressman interpolation radar 1 ...")
@@ -149,7 +152,7 @@ print("Coverage : V1 {:.1f} %, V2 {:.1f} %".format(
 # 3. DUAL-DOPPLER GEOMETRY : u(x-xi)/Ri + v(y-yi)/Ri + W(z-zi)/Ri = Vi
 # --------------------------------------------------------------------------- #
 
-# Unit vectors of the radar beams at each grid point : (a,b,c) = (dx,dy,dz)/Ri
+# Unit vectors of the radar beams : (a,b,c) = (dx,dy,dz)/Ri
 def unit_vectors(radar_pos):
     dx = XX - radar_pos[0]
     dy = YY - radar_pos[1]
@@ -199,6 +202,7 @@ def integrate_w(D, direction="up", w_boundary=0.0):
     """direction='up'   : w(z=0) = w_boundary, upward integration (analysis A)
        direction='down' : w(z_T) = w_boundary, downward integration (analysis A')"""
     w = np.zeros((NX, NY, NZ))
+    # The integration is performed column-wise, using the trapezoidal rule to account for the vertical variation of density (anelastic continuity).
     if direction == "up":
         w[:, :, 0] = w_boundary + 0.5 * Z_GRID[0] * (-D[:, :, 0])  # ground -> 1st level
         for k in range(NZ - 1):
@@ -215,26 +219,6 @@ def integrate_w(D, direction="up", w_boundary=0.0):
             w[:, :, k - 1] = flux / RHO[k - 1]
     return w
 
-# MIN_COL_FRAC = 0.6   # minimum fraction of valid levels in a column
-
-# def fill_divergence_gaps(D):
-#     """The vertical integration is local to each column : gaps (cone of
-#     silence above the radars, missing echoes) are filled by vertical
-#     interpolation/extrapolation of D. Columns that are too incomplete
-#     (< MIN_COL_FRAC of valid levels) are rejected."""
-#     Df = D.copy()
-#     col_ok = np.zeros((NX, NY), dtype=bool)
-#     for i in range(NX):
-#         for j in range(NY):
-#             col = D[i, j, :]
-#             ok = np.isfinite(col)
-#             if ok.mean() < MIN_COL_FRAC:
-#                 continue
-#             col_ok[i, j] = True
-#             if not ok.all():
-#                 Df[i, j, :] = np.interp(Z_GRID, Z_GRID[ok], col[ok])
-#     Df[~np.isfinite(Df)] = 0.0
-#       return Df, col_ok,
 
 # Dual-Doppler analyses A and A' are implemented as an iteration : w -> (u,v) -> D -> w
 def dual_doppler_analysis(direction="up", n_iter=12, tol=0.05):
@@ -375,21 +359,6 @@ if true_wind is not None:
     ax2.grid(True); ax2.legend()
 ax1.set_xlabel("mean w (m/s)"); ax1.set_ylabel("altitude (km)")
 ax1.set_title("Mean vertical profile of w"); ax1.grid(True); ax1.legend()
-plt.tight_layout()
-
-# ---- Fig. 4 : vertical cross-section of the wind ----
-iy0 = int(np.argmin(np.abs(Y_GRID - VORTEX_CENTER[1]))) if not USE_REAL_DATA \
-      else NY // 2
-fig, axes = plt.subplots(len(ANALYSES), 1, figsize=(9, 3.2 * len(ANALYSES)),
-                         sharex=True)
-for ax, (name, (u, v, w)) in zip(np.atleast_1d(axes), ANALYSES.items()):
-    ax.quiver(XX[:, iy0, :], ZZ[:, iy0, :],
-              (u - U_MEAN)[:, iy0, :], w[:, iy0, :],
-              scale=120, width=0.0035)
-    ax.set_ylabel("z (km)")
-    ax.set_title(f"Vertical cross-section (u - u_mean, w) at y = {Y_GRID[iy0]:.0f} km "
-                 f"— {name}")
-np.atleast_1d(axes)[-1].set_xlabel("X East (km)")
 plt.tight_layout()
 
 plt.show()
