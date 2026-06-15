@@ -90,7 +90,7 @@ print(f"Grid : {NX} x {NY} x {NZ} = {NX*NY*NZ} points, "
 # 2. CRESSMAN INTERPOLATION 
 # --------------------------------------------------------------------------- #
 
-R_INFLUENCE = 1             # radius R of the influence sphere for Cressman interpolation (km)
+R_INFLUENCE = 2            # radius R of the influence sphere for Cressman interpolation (km)
 MIN_OBS = 4                 # minimum number of echoes inside the influence sphere
 
 # Converts polar coordinates (elev, azim, rng) to Cartesian (x,y,z) for a radar
