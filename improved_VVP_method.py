@@ -11,7 +11,7 @@ import pyart
 
 # USE_REAL_DATA = True  -> read true radar data MP-PAWR
 # USE_REAL_DATA = False -> generate_radar_data (known "true" wind field for validation)
-USE_REAL_DATA = True
+USE_REAL_DATA = False
 
 VERBOSE = False
 
@@ -245,11 +245,20 @@ else:
 # 6. VISUALIZATION : retrieved wind on 4 layers (2x2) + vertical profiles
 # --------------------------------------------------------------------------- #
 
-length_scale = 45  # km
+length_scale = 90  # km
 X_GRID  = np.arange(-length_scale, length_scale, 5.0)
 Y_GRID  = np.arange(-length_scale, length_scale, 5.0)
-Z_LAYER = 5.0             # altitude of the displayed layer (km)
+DXY, DZ = 2.0, 1.0                      # horizontal / vertical spacing (km)
+X_GRID = np.arange(6.0, 34.1, DXY)
+Y_GRID = np.arange(6.0, 56.1, DXY)  
+Z_LAYER = 2.5             # altitude of the displayed layer (km)
 QUIVER_SCALE = 40         # scale for unit-length quiver arrows
+# REMOVE_MEAN = True  -> plot the wind ANOMALY V' = V - mean : the ~uniform mean
+#                       flow dominates and is removed, so the vortex / divergence
+#                       structure becomes visible (this is NOT the real wind).
+# REMOVE_MEAN = False -> plot the REAL total wind V (mean kept) : physically exact,
+#                       but the vortex is largely hidden under the mean flow.
+REMOVE_MEAN = True
 
 # --- data collection : 2D grids (NaN = no retrieval) ---
 U = np.full((len(Y_GRID), len(X_GRID)), np.nan)
@@ -265,17 +274,26 @@ for iy, y0 in enumerate(Y_GRID):
 fig, ax = plt.subplots(figsize=(8, 7))
 
 XX, YY = np.meshgrid(X_GRID, Y_GRID)
-speed = np.hypot(U, V)
+
+# remove the domain-mean flow to reveal the vortex (anomaly V'), or keep it (real V)
+if REMOVE_MEAN:
+    U_MEAN, V_MEAN = np.nanmean(U), np.nanmean(V)
+else:
+    U_MEAN, V_MEAN = 0.0, 0.0
+_PRIME = "'" if REMOVE_MEAN else ""   # label : |V'| (anomaly) vs |V| (total)
+Ur, Vr = U - U_MEAN, V - V_MEAN
+
+speed = np.hypot(Ur, Vr)
 n_pts = int(np.count_nonzero(~np.isnan(speed)))
 SPEED_MAX = np.nanmax(speed) if np.any(~np.isnan(speed)) else 1.0
 
 pm = ax.pcolormesh(XX, YY, speed, cmap="YlOrRd", alpha=0.65,
                    shading="nearest", vmin=0.0, vmax=SPEED_MAX)
-fig.colorbar(pm, ax=ax, label="|V| (m/s)")
+fig.colorbar(pm, ax=ax, label=f"|V{_PRIME}| (m/s)")
 
 # unit-length arrows : direction only, magnitude is in the background color
 norm = np.where(speed > 0, speed, np.nan)
-ax.quiver(XX, YY, U / norm, V / norm, scale=QUIVER_SCALE,
+ax.quiver(XX, YY, Ur / norm, Vr / norm, scale=QUIVER_SCALE,
           width=0.003, color="k")
 ax.scatter([0], [0], color="k", marker="^", s=60)
 

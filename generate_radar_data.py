@@ -8,32 +8,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --------------------------------------------------------------------------- #
-# 1. CHAMP DE VENT "VRAI" 
+# 1. CHAMP DE VENT "VRAI"
 # --------------------------------------------------------------------------- #
-# Champ linéaire : V = V0 + (gradients) . (x, y, z)
-TRUE_WIND_FIELD = {
-    # vent moyen (m/s)
-    "U0":  5.0,    # composante Est
-    "V0":  -4.0,    # composante Nord
-    "W0":  1.0,    # vitesse verticale de base
-
-    # gradients horizontaux ((m/s)/km)
-    "dudx":  0.2, "dudy":  -0.2, # dudy doit etre differents de - dvdx
-    "dvdx": 0.1, "dvdy":  0.3,
-
-    # gradients verticaux ((m/s)/km)
-    "dudz":  -0.1,   # cisaillement de u avec l'altitude
-    "dvdz":  -0.2,   # cisaillement de v avec l'altitude
-    "dwdz":  0.3,   # la vitesse verticale croît avec l'altitude (updraft)
-}
-
-
-def true_wind(x, y, z):
-    """Renvoie (u, v, w) du champ VRAI aux points (x, y, z) en km."""
-    u = TRUE_WIND_FIELD["U0"] + TRUE_WIND_FIELD["dudx"] * x + TRUE_WIND_FIELD["dudy"] * y + TRUE_WIND_FIELD["dudz"] * z
-    v = TRUE_WIND_FIELD["V0"] + TRUE_WIND_FIELD["dvdx"] * x + TRUE_WIND_FIELD["dvdy"] * y + TRUE_WIND_FIELD["dvdz"] * z
-    w = TRUE_WIND_FIELD["W0"] + TRUE_WIND_FIELD["dwdz"] * z
-    return u, v, w
+# On importe le MÊME champ de vent vrai que le générateur dual-Doppler, afin
+# que la méthode VVP mono-statique et l'analyse dual-Doppler échantillonnent
+# exactement le même vent. Les restitutions des deux méthodes sont ainsi
+# directement comparables.
+from generate_dual_radar_data import true_wind
 
 
 x_value = np.linspace(-10, 10, 10)  # km

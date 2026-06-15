@@ -276,81 +276,138 @@ if true_wind is not None and VERBOSE:
 # 7. VISUALIZATION
 # --------------------------------------------------------------------------- #
 
+# Which dual-Doppler analysis to display : "A", "A'" or "both"
+SHOW_ANALYSIS = "A"
+
+_DISPLAY_KEYS = {"A": ["A (up)"], "A'": ["A' (down)"],
+                 "both": ["A (up)", "A' (down)"]}
+if SHOW_ANALYSIS not in _DISPLAY_KEYS:
+    raise ValueError(f"SHOW_ANALYSIS must be one of {list(_DISPLAY_KEYS)}")
+DISPLAY_ANALYSES = {k: ANALYSES[k] for k in _DISPLAY_KEYS[SHOW_ANALYSIS]}
+
 # ---- Fig. 1 : geometry, dual-Doppler lobes (beam-crossing angle) ----
 iz0 = int(np.argmin(np.abs(Z_GRID - 3.0)))
 x_disp = np.arange(RADAR1_POS[0] - 30.0, RADAR2_POS[0] + 30.1, 1.0)
 y_disp = np.arange(-60.0, 60.1, 1.0)
 XD, YD = np.meshgrid(x_disp, y_disp, indexing="ij")
 
-def beta_map(x, y, z):
-    """Beam-crossing angle (deg) of the two radars at height z."""
-    ab = []
-    for pos in (RADAR1_POS, RADAR2_POS):
-        dx, dy, dz = x - pos[0], y - pos[1], z - pos[2]
-        Ri = np.sqrt(dx**2 + dy**2 + dz**2)
-        ab.append((dx / Ri, dy / Ri))
-    (A1, B1), (A2, B2) = ab
-    h = np.maximum(np.hypot(A1, B1) * np.hypot(A2, B2), 1e-12)
-    return np.degrees(np.arcsin(np.clip(np.abs(A1 * B2 - B1 * A2) / h, 0, 1)))
+show_beta_map = False
 
-BETA_DISP = beta_map(XD, YD, Z_GRID[iz0])
+if show_beta_map:
 
-fig, ax = plt.subplots(figsize=(7, 6))
-pm = ax.pcolormesh(x_disp, y_disp, BETA_DISP.T, cmap="viridis",
-                   shading="nearest", vmin=0, vmax=90)
-fig.colorbar(pm, ax=ax, label="crossing angle beta (deg)")
-ax.contour(x_disp, y_disp, BETA_DISP.T, levels=[BETA_MIN_DEG],
-           colors="r", linewidths=1.5)
-# analysis grid domain
-ax.add_patch(plt.Rectangle((X_GRID[0], Y_GRID[0]),
-                           X_GRID[-1] - X_GRID[0], Y_GRID[-1] - Y_GRID[0],
-                           fill=False, edgecolor="w", lw=1.5, ls="--"))
-ax.annotate("analysis grid", (X_GRID[0] + 1, Y_GRID[-1] - 3), color="w", fontsize=8)
-for pos, name in [(RADAR1_POS, "Radar 1"), (RADAR2_POS, "Radar 2")]:
-    ax.plot(*pos[:2], "w^", ms=10, mec="k")
-    ax.annotate(name, pos[:2], textcoords="offset points", xytext=(5, -12),
-                color="w")
-ax.set_title(f"Dual-Doppler lobes (z = {Z_GRID[iz0]} km) — "
-             f"red contour : beta = {BETA_MIN_DEG}°")
-ax.set_xlabel("X East (km)"); ax.set_ylabel("Y North (km)")
-ax.set_aspect("equal"); plt.tight_layout()
+    def beta_map(x, y, z):
+        """Beam-crossing angle (deg) of the two radars at height z."""
+        ab = []
+        for pos in (RADAR1_POS, RADAR2_POS):
+            dx, dy, dz = x - pos[0], y - pos[1], z - pos[2]
+            Ri = np.sqrt(dx**2 + dy**2 + dz**2)
+            ab.append((dx / Ri, dy / Ri))
+        (A1, B1), (A2, B2) = ab
+        h = np.maximum(np.hypot(A1, B1) * np.hypot(A2, B2), 1e-12)
+        return np.degrees(np.arcsin(np.clip(np.abs(A1 * B2 - B1 * A2) / h, 0, 1)))
 
-# ---- Fig. 2 : retrieved horizontal wind + w ----
-U_MEAN, V_MEAN = np.nanmean(uA), np.nanmean(vA)
-fig, axes = plt.subplots(1, len(ANALYSES), figsize=(5.6 * len(ANALYSES), 5.4),
+    BETA_DISP = beta_map(XD, YD, Z_GRID[iz0])
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    pm = ax.pcolormesh(x_disp, y_disp, BETA_DISP.T, cmap="viridis",
+                    shading="nearest", vmin=0, vmax=90)
+    fig.colorbar(pm, ax=ax, label="crossing angle beta (deg)")
+    ax.contour(x_disp, y_disp, BETA_DISP.T, levels=[BETA_MIN_DEG],
+            colors="r", linewidths=1.5)
+    # analysis grid domain
+    ax.add_patch(plt.Rectangle((X_GRID[0], Y_GRID[0]),
+                            X_GRID[-1] - X_GRID[0], Y_GRID[-1] - Y_GRID[0],
+                            fill=False, edgecolor="w", lw=1.5, ls="--"))
+    ax.annotate("analysis grid", (X_GRID[0] + 1, Y_GRID[-1] - 3), color="w", fontsize=8)
+    for pos, name in [(RADAR1_POS, "Radar 1"), (RADAR2_POS, "Radar 2")]:
+        ax.plot(*pos[:2], "w^", ms=10, mec="k")
+        ax.annotate(name, pos[:2], textcoords="offset points", xytext=(5, -12),
+                    color="w")
+    ax.set_title(f"Dual-Doppler lobes (z = {Z_GRID[iz0]} km) — "
+                f"red contour : beta = {BETA_MIN_DEG}°")
+    ax.set_xlabel("X East (km)"); ax.set_ylabel("Y North (km)")
+    ax.set_aspect("equal"); plt.tight_layout()
+
+# ---- Fig. 2 : retrieved horizontal wind ----
+# WIND_PLOT_STYLE = "vvp" -> unit-length arrows + speed color (no w color)
+# WIND_PLOT_STYLE = "w"   -> w color + wind arrows scaled by magnitude
+# REMOVE_MEAN = True  -> plot the wind ANOMALY V' = V - mean : the ~uniform mean
+#                       flow dominates and is removed, so the vortex / divergence
+#                       structure becomes visible (this is NOT the real wind).
+# REMOVE_MEAN = False -> plot the REAL total wind V (mean kept) : physically exact,
+#                       but the vortex is largely hidden under the mean flow.
+WIND_PLOT_STYLE = "vvp"
+REMOVE_MEAN = True
+
+QUIVER_SCALE = 40   # same arrow size as the VVP plot ("vvp" style)
+if REMOVE_MEAN:
+    U_MEAN, V_MEAN = np.nanmean(uA), np.nanmean(vA)
+else:
+    U_MEAN, V_MEAN = 0.0, 0.0
+_PRIME = "'" if REMOVE_MEAN else ""   # label : |V'| (anomaly) vs |V| (total)
+fig, axes = plt.subplots(1, len(DISPLAY_ANALYSES),
+                         figsize=(5.6 * len(DISPLAY_ANALYSES), 5.4),
                          sharey=True)
-WMAX = np.nanmax([np.nanmax(np.abs(w[:, :, iz0])) for *_ , w in ANALYSES.values()])
-for ax, (name, (u, v, w)) in zip(np.atleast_1d(axes), ANALYSES.items()):
-    pm = ax.pcolormesh(X_GRID, Y_GRID, w[:, :, iz0].T, cmap="RdBu_r",
-                       vmin=-WMAX, vmax=WMAX, shading="nearest")
-    fig.colorbar(pm, ax=ax, label="w (m/s)")
-    st = 1
-    ax.quiver(XX[::st, ::st, iz0], YY[::st, ::st, iz0],
-              (u - U_MEAN)[::st, ::st, iz0], (v - V_MEAN)[::st, ::st, iz0],
-              scale=120, width=0.004, color="k")
+
+if WIND_PLOT_STYLE == "vvp":
+    # shared color scale on the relative wind speed |V'| across analyses
+    CMAX = np.nanmax([np.nanmax(np.hypot((u - U_MEAN)[:, :, iz0],
+                                         (v - V_MEAN)[:, :, iz0]))
+                      for u, v, _ in DISPLAY_ANALYSES.values()])
+elif WIND_PLOT_STYLE == "w":
+    CMAX = np.nanmax([np.nanmax(np.abs(w[:, :, iz0]))
+                      for *_, w in DISPLAY_ANALYSES.values()])
+else:
+    raise ValueError("WIND_PLOT_STYLE must be 'vvp' or 'w'")
+
+for ax, (name, (u, v, w)) in zip(np.atleast_1d(axes), DISPLAY_ANALYSES.items()):
+    # wind to display : anomaly (mean removed) or real total wind (U_MEAN=0)
+    ur, vr = (u - U_MEAN)[:, :, iz0], (v - V_MEAN)[:, :, iz0]
     if true_wind is not None:
-        ax.quiver(XX[::st, ::st, iz0], YY[::st, ::st, iz0],
-                  (uT - U_MEAN)[::st, ::st, iz0], (vT - V_MEAN)[::st, ::st, iz0],
-                  scale=120, width=0.0018, color="limegreen", alpha=0.9)
+        urT, vrT = (uT - U_MEAN)[:, :, iz0], (vT - V_MEAN)[:, :, iz0]
+    if WIND_PLOT_STYLE == "vvp":
+        # background = wind speed, arrows = direction only
+        speed = np.hypot(ur, vr)
+        pm = ax.pcolormesh(X_GRID, Y_GRID, speed.T, cmap="YlOrRd", alpha=0.65,
+                           shading="nearest", vmin=0.0, vmax=CMAX)
+        fig.colorbar(pm, ax=ax, label=f"|V{_PRIME}| (m/s)")
+        norm = np.where(speed > 0, speed, np.nan)
+        ax.quiver(XX[:, :, iz0], YY[:, :, iz0], ur / norm, vr / norm,
+                  scale=QUIVER_SCALE, width=0.003, color="k")
+        if true_wind is not None:
+            normT = np.hypot(urT, vrT)
+            normT = np.where(normT > 0, normT, np.nan)
+            ax.quiver(XX[:, :, iz0], YY[:, :, iz0], urT / normT, vrT / normT,
+                      scale=QUIVER_SCALE, width=0.0018, color="limegreen", alpha=0.9)
+    else:  # "w" : background = vertical velocity w, arrows = relative wind (proportional)
+        pm = ax.pcolormesh(X_GRID, Y_GRID, w[:, :, iz0].T, cmap="RdBu_r",
+                           vmin=-CMAX, vmax=CMAX, shading="nearest")
+        fig.colorbar(pm, ax=ax, label="w (m/s)")
+        ax.quiver(XX[:, :, iz0], YY[:, :, iz0], ur, vr,
+                  scale=120, width=0.004, color="k")
+        if true_wind is not None:
+            ax.quiver(XX[:, :, iz0], YY[:, :, iz0], urT, vrT,
+                      scale=120, width=0.0018, color="limegreen", alpha=0.9)
     ax.set_title(f"Analysis {name} — z = {Z_GRID[iz0]} km")
     ax.set_xlabel("X East (km)"); ax.set_aspect("equal")
     ax.set_xlim(X_GRID[0] - 1, X_GRID[-1] + 1)
     ax.set_ylim(Y_GRID[0] - 1, Y_GRID[-1] + 1)
 np.atleast_1d(axes)[0].set_ylabel("Y North (km)")
+_kind = "wind anomaly (mean removed)" if REMOVE_MEAN else "total wind"
+_annot = f"{_kind} — unit arrows" if WIND_PLOT_STYLE == "vvp" else _kind
 np.atleast_1d(axes)[0].annotate(
-    "relative wind (mean subtracted)" +
-    (" — black = retrieved, green = truth" if true_wind is not None else ""),
+    _annot + (" — black = retrieved, green = truth" if true_wind is not None else ""),
     (0.02, 0.02), xycoords="axes fraction", fontsize=8)
 plt.tight_layout()
 
 # ---- Fig. 3 : mean w(z) profiles — error propagation ----
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5), sharey=True)
 styles = {"A (up)": "b--s", "A' (down)": "g--o", "B' (adj.)": "m--^"}
-for name, (_, _, w) in ANALYSES.items():
+for name, (_, _, w) in DISPLAY_ANALYSES.items():
     ax1.plot(np.nanmean(w, axis=(0, 1)), Z_GRID, styles[name], label=name)
 if true_wind is not None:
     ax1.plot(np.nanmean(wT, axis=(0, 1)), Z_GRID, "k-", lw=2, label="truth")
-    for name, (_, _, w) in ANALYSES.items():
+    for name, (_, _, w) in DISPLAY_ANALYSES.items():
         rmsz = np.sqrt(np.nanmean((w - wT)**2, axis=(0, 1)))
         ax2.plot(rmsz, Z_GRID, styles[name], label=name)
     ax2.set_xlabel("rms( w - w_true ) (m/s)")
@@ -362,3 +419,4 @@ ax1.set_title("Mean vertical profile of w"); ax1.grid(True); ax1.legend()
 plt.tight_layout()
 
 plt.show()
+# %%
