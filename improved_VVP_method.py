@@ -11,7 +11,7 @@ import pyart
 
 # USE_REAL_DATA = True  -> read true radar data MP-PAWR
 # USE_REAL_DATA = False -> generate_radar_data (known "true" wind field for validation)
-USE_REAL_DATA = False
+USE_REAL_DATA = True
 
 VERBOSE = False
 
@@ -249,8 +249,8 @@ length_scale = 90  # km
 X_GRID  = np.arange(-length_scale, length_scale, 5.0)
 Y_GRID  = np.arange(-length_scale, length_scale, 5.0)
 DXY, DZ = 2.0, 1.0                      # horizontal / vertical spacing (km)
-X_GRID = np.arange(6.0, 34.1, DXY)
-Y_GRID = np.arange(6.0, 56.1, DXY)  
+#X_GRID = np.arange(6.0, 34.1, DXY)
+#Y_GRID = np.arange(6.0, 56.1, DXY)  
 Z_LAYER = 2.5             # altitude of the displayed layer (km)
 QUIVER_SCALE = 40         # scale for unit-length quiver arrows
 # REMOVE_MEAN = True  -> plot the wind ANOMALY V' = V - mean : the ~uniform mean
@@ -258,7 +258,7 @@ QUIVER_SCALE = 40         # scale for unit-length quiver arrows
 #                       structure becomes visible (this is NOT the real wind).
 # REMOVE_MEAN = False -> plot the REAL total wind V (mean kept) : physically exact,
 #                       but the vortex is largely hidden under the mean flow.
-REMOVE_MEAN = True
+REMOVE_MEAN = False
 
 # --- data collection : 2D grids (NaN = no retrieval) ---
 U = np.full((len(Y_GRID), len(X_GRID)), np.nan)
@@ -356,7 +356,7 @@ plt.show()
 # Requires the project .venv (Python 3.12 + arm_pyart) :
 # in VSCode, select the ".venv" interpreter/kernel for this file.
 
-SHOW_PPI = False  # set to True to display the PPI plots of the raw radial velocity data using Py-ART
+SHOW_PPI = True  # set to True to display the PPI plots of the raw radial velocity data using Py-ART
 
 if SHOW_PPI:
     PPI_ELEVATION_DEG = 5.47   # desired elevation (deg) : nearest available sweep is shown
@@ -392,4 +392,3 @@ if SHOW_PPI:
 
     plt.tight_layout()
     plt.show()
-# %%

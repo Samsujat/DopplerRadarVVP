@@ -277,7 +277,7 @@ if true_wind is not None and VERBOSE:
 # --------------------------------------------------------------------------- #
 
 # Which dual-Doppler analysis to display : "A", "A'" or "both"
-SHOW_ANALYSIS = "A"
+SHOW_ANALYSIS = "A'"
 
 _DISPLAY_KEYS = {"A": ["A (up)"], "A'": ["A' (down)"],
                  "both": ["A (up)", "A' (down)"]}
@@ -419,4 +419,3 @@ ax1.set_title("Mean vertical profile of w"); ax1.grid(True); ax1.legend()
 plt.tight_layout()
 
 plt.show()
-# %%
