@@ -277,7 +277,7 @@ if true_wind is not None and VERBOSE:
 # --------------------------------------------------------------------------- #
 
 # Which dual-Doppler analysis to display : "A", "A'" or "both"
-SHOW_ANALYSIS = "A'"
+SHOW_ANALYSIS = "both"
 
 _DISPLAY_KEYS = {"A": ["A (up)"], "A'": ["A' (down)"],
                  "both": ["A (up)", "A' (down)"]}
@@ -337,7 +337,7 @@ if show_beta_map:
 # REMOVE_MEAN = False -> plot the REAL total wind V (mean kept) : physically exact,
 #                       but the vortex is largely hidden under the mean flow.
 WIND_PLOT_STYLE = "vvp"
-REMOVE_MEAN = True
+REMOVE_MEAN = False
 
 QUIVER_SCALE = 40   # same arrow size as the VVP plot ("vvp" style)
 if REMOVE_MEAN:
@@ -417,5 +417,61 @@ if true_wind is not None:
 ax1.set_xlabel("mean w (m/s)"); ax1.set_ylabel("altitude (km)")
 ax1.set_title("Mean vertical profile of w"); ax1.grid(True); ax1.legend()
 plt.tight_layout()
+
+# ---- Fig. 4 : 3D view of the retrieved wind ----
+# SHOW_WIND_3D = True -> add a 3D quiver plot of the retrieved wind field (u, v, w),
+#                       one figure per displayed analysis. Arrows are normalized to a
+#                       fixed length (km) and colored by the wind speed |V| (m/s).
+SHOW_WIND_3D = False
+
+if SHOW_WIND_3D:
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers the 3d projection)
+
+    STRIDE_XY = 2     # subsample the horizontal grid to keep the 3D plot readable
+    STRIDE_Z  = 1     # subsample the vertical grid
+    ARROW_KM  = 1.8   # length (km) of the unit-normalized arrows
+
+    sl = (slice(None, None, STRIDE_XY),
+          slice(None, None, STRIDE_XY),
+          slice(None, None, STRIDE_Z))
+
+    for name, (u, v, w) in DISPLAY_ANALYSES.items():
+        x, y, z = XX[sl], YY[sl], ZZ[sl]
+        uu, vv, ww = u[sl], v[sl], w[sl]
+
+        m = np.isfinite(uu) & np.isfinite(vv) & np.isfinite(ww)
+        if not np.any(m):
+            print(f"3D plot : analysis {name} has no valid wind, skipped.")
+            continue
+
+        speed = np.sqrt(uu[m]**2 + vv[m]**2 + ww[m]**2)
+        smin, smax = float(np.min(speed)), float(np.max(speed))
+        cnorm = (speed - smin) / (smax - smin) if smax > smin else np.zeros_like(speed)
+        cmap = plt.cm.YlOrRd
+        # 3D quiver draws each arrow as 1 shaft + 2 head segments : the color list must
+        # follow that order (all shafts first, then the two head segments per arrow).
+        colors = cmap(cnorm)
+        colors = np.concatenate((colors, np.repeat(colors, 2, axis=0)), axis=0)
+
+        fig = plt.figure(figsize=(8, 7))
+        ax = fig.add_subplot(projection="3d")
+        ax.quiver(x[m], y[m], z[m], uu[m], vv[m], ww[m],
+                  length=ARROW_KM, normalize=True, colors=colors, linewidth=0.7)
+
+        # radar positions in the common frame
+        for pos, lbl in [(RADAR1_POS, "Radar 1"), (RADAR2_POS, "Radar 2")]:
+            ax.scatter(*pos, color="k", marker="^", s=50)
+            ax.text(pos[0], pos[1], pos[2], lbl, fontsize=8)
+
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(smin, smax))
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, label="|V| (m/s)", shrink=0.6, pad=0.1)
+
+        ax.set_xlabel("X East (km)"); ax.set_ylabel("Y North (km)")
+        ax.set_zlabel("altitude (km)")
+        ax.set_xlim(X_GRID[0], X_GRID[-1]); ax.set_ylim(Y_GRID[0], Y_GRID[-1])
+        ax.set_zlim(Z_GRID[0], Z_GRID[-1])
+        ax.set_title(f"Retrieved wind (3D) — analysis {name}")
+        plt.tight_layout()
 
 plt.show()

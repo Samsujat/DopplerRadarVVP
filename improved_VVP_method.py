@@ -56,12 +56,12 @@ if USE_REAL_DATA:
     print("True Radar Data : vr shape =", vr.shape,
           "| valid = {:.1f} %".format(100 * np.mean(~np.isnan(vr))))
 else:
-    from generate_radar_data import generate, true_wind
-
-    # Physical coordinates of the radar (synthetic case)
-    ELEVATIONS_DEG = np.array([0.5, 1.5, 2.4, 3.4, 4.3, 5.3, 6.2, 7.5, 8.7, 10.0, 12.0, 14.0, 16.7, 19.5])
-    AZIMUTHS_DEG = np.arange(0.0, 360.0, 1.0)        # 360 steps, 1° step range
-    RANGES_KM = np.arange(2.0, 200.0, 0.5)           # from 2 to 200 km, 500 m step range
+    # The sampling geometry (elevations, azimuths, ranges) is defined by the
+    # generator and depends on its radar_type ('doppler' or 'PAWR'). Importing it
+    # here keeps the VVP grid consistent with whatever radar is simulated, so the
+    # reshape below always matches generate()'s output size.
+    from generate_radar_data import (generate, true_wind,
+                                      ELEVATIONS_DEG, AZIMUTHS_DEG, RANGES_KM)
 
     # generate() returns a flat array -> reshape to (n_elv, n_azim, n_rng)
     vr = generate().reshape(len(ELEVATIONS_DEG), len(AZIMUTHS_DEG), len(RANGES_KM))
@@ -115,7 +115,7 @@ def design_matrix(r, theta, phi, x0, y0, z0):
 # 3. SYSTEME RESOLUTION : A X = B  -> X = (A^-1) B
 # --------------------------------------------------------------------------- #
 
-def solve(G, d, method="direct", lam=0.1, rcond=1e-10):
+def solve(G, d, method="ridge", lam=0.1, rcond=1e-10):
     if method == "direct":
         A = np.dot(G.T, G)
         B = np.dot(G.T, d)
@@ -191,8 +191,8 @@ def retrieve_wind(x0, y0, z0):
     # ---- Step 7 : Wind reconstruction ----
     u0, v0, w0     = X[0], X[1], X[2]
     #ux, uy, uz  = X[3], X[4], X[5]
-    #vy, vz  = X[6], X[7]
-    #wz = X[5]  # w'z
+    ux, vy  = X[3], X[4]
+    wz = X[5]  # w'z
 
     # ---- Filter out unrealistic wind estimates ----
     # Speed excessive
@@ -208,7 +208,7 @@ def retrieve_wind(x0, y0, z0):
         print(f"ux={ux:.3e}, uy={uy:.3e}, uz={uz:.3e}")
         print(f"vy={vy:.3e}, vz={vz:.3e}, wz={wz:.3e}")
 
-    return u0, v0, w0
+    return u0, v0, w0, wz
 
 # %%
 # --------------------------------------------------------------------------- #
@@ -307,7 +307,7 @@ if ELV_MIN_RAD > 0:   # lowest-beam cap only meaningful for positive elevation
     s_outer = min(s_outer, Z_LAYER / np.tan(ELV_MIN_RAD))
 s_inner = Z_LAYER / np.tan(ELV_MAX_RAD)
 ax.plot(s_outer * np.cos(circle_th), s_outer * np.sin(circle_th),
-        "r-", lw=1.3, label="limite visibilité radar")
+        "r-", lw=1.3, label="radar visibility limit")
 ax.legend(loc="upper right", fontsize=8)
 ax.set_title(f"VVP — z = {Z_LAYER} km ({n_pts} pts)")
 ax.set_xlabel("X East (km)"); ax.set_ylabel("Y North (km)")
@@ -332,18 +332,24 @@ if Z_PROFILE_SHOW:
             res = retrieve_wind(px, py, float(z0))
             w_rec.append(res[2] if res is not None else np.nan)
             wz_rec.append(res[3] if res is not None else np.nan)
+        w_rec = np.array(w_rec)
+        wz_rec = np.array(wz_rec)
+
         line_w, = ax.plot(w_rec, z_profile, "b--s", label="w restitué")
+
+        # arrow on each w point : direction of the vertical derivative w'z = dw/dz
+        # drawn as the local tangent (dw/dz, 1) over a small altitude step, so the
+        # arrow lies along the profile and points toward increasing altitude
+        # (tilts right if w increases with height, left if it decreases).
+        DZ_ARROW = 0.3                                # altitude step of the arrow (km)
+        ax.quiver(w_rec, z_profile, wz_rec * DZ_ARROW, np.full_like(wz_rec, DZ_ARROW),
+                  angles="xy", scale_units="xy", scale=1, color="r",
+                  width=0.005, label="sens de w'z")
+
         ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
         ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")
         ax.grid(True)
-
-        # w'z on a secondary x-axis: different unit and magnitude than w
-        ax2 = ax.twiny()
-        line_wz, = ax2.plot(wz_rec, z_profile, "r--o", label="w'z restitué")
-        ax2.set_xlabel("w'z", color="r")
-        ax2.tick_params(axis="x", labelcolor="r")
-
-        ax.legend(handles=[line_w, line_wz], loc="best")
+        ax.legend(loc="best")
 
     plt.tight_layout()
 #plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_12P.png", dpi=300)
@@ -360,7 +366,7 @@ SHOW_PPI = True  # set to True to display the PPI plots of the raw radial veloci
 
 if SHOW_PPI:
     PPI_ELEVATION_DEG = 5.47   # desired elevation (deg) : nearest available sweep is shown
-    VEL_LIM = 30.0            # color scale limit (m/s)
+    VEL_LIM = None           # color scale limit (m/s) ; None -> auto-fit to the sweep data
 
     n_elv, n_azim, n_rng = vr.shape
 
@@ -379,16 +385,48 @@ if SHOW_PPI:
 
     # nearest available sweep to the requested elevation
     sw = int(np.argmin(np.abs(ELEVATIONS_DEG - PPI_ELEVATION_DEG)))
-    print(f"PPI : élévation demandée {PPI_ELEVATION_DEG:.1f}° -> sweep {sw} ({ELEVATIONS_DEG[sw]:.2f}°)")
+    print(f"PPI : elevation {PPI_ELEVATION_DEG:.1f}° -> sweep {sw} ({ELEVATIONS_DEG[sw]:.2f}°)")
+
+    # Color scale fitted to the displayed sweep : a fixed, too-wide limit makes the
+    # diverging colormap wash out to its pale centre (the "too white" effect). When
+    # VEL_LIM is None, fit it to the 99th percentile of |vr| on that sweep.
+    if VEL_LIM is None:
+        finite = np.abs(vr[sw][np.isfinite(vr[sw])])
+        VEL_LIM = max(float(np.ceil(np.percentile(finite, 99))) if finite.size else 30.0, 1.0)
+    print(f"PPI : color scale +/- {VEL_LIM:.0f} m/s")
 
     display = pyart.graph.RadarDisplay(radar_ppi)
     fig3, ax3 = plt.subplots(figsize=(8, 7))
     display.plot_ppi("velocity", sweep=sw, ax=ax3, fig=fig3,
                      vmin=-VEL_LIM, vmax=VEL_LIM, cmap="RdBu_r",
                      colorbar_label="vr (m/s)",
-                     title=f"PPI vitesse radiale — élévation {ELEVATIONS_DEG[sw]:.2f}°")
+                     title=f"PPI radial velocity — elevation {ELEVATIONS_DEG[sw]:.2f}°")
     display.plot_range_rings([20, 40, 60, 80], ax=ax3, lw=0.5, ls="--")
+
+    # Circle = where this sweep crosses the Z_LAYER altitude (2.5 km).
+    # At a fixed elevation phi, a constant altitude z maps to a constant slant
+    # range r0 = z/sin(phi), plotted on the PPI as a ground-range ring s = z/tan(phi).
+    phi = np.deg2rad(ELEVATIONS_DEG[sw])
+    r0 = Z_LAYER / np.sin(phi)            # slant range (km) reaching z = 2.5 km
+    s_ring = Z_LAYER / np.tan(phi)        # ground range (km) shown on the PPI
+    th_c = np.linspace(0.0, 2.0 * np.pi, 361)
+    ax3.plot(s_ring * np.sin(th_c), s_ring * np.cos(th_c), "g-", lw=2.0,
+             label=f"z = {Z_LAYER} km  (r = {r0:.1f} km)")
+    ax3.legend(loc="upper right", fontsize=8)
     ax3.set_aspect("equal")
 
+    plt.tight_layout()
+
+    # ---- vr along that circle : intensity vs azimuth (VAD-like curve) ----
+    # For a uniform horizontal wind, vr(azimuth) is a sinusoid of amplitude |V|cos(phi).
+    ir = int(np.argmin(np.abs(RANGES_KM - r0)))
+    vr_az = vr[sw, :, ir]
+    fig4, ax4 = plt.subplots(figsize=(9, 4))
+    ax4.plot(AZIMUTHS_DEG, vr_az, "b.-", ms=3, lw=0.8)
+    ax4.axhline(0.0, color="k", lw=0.6)
+    ax4.set_title(f"vr=f(azimuth) — z = {Z_LAYER} km "
+                  f"(elev {ELEVATIONS_DEG[sw]:.2f}°, r = {RANGES_KM[ir]:.1f} km)")
+    ax4.set_xlabel("azimuth (deg)"); ax4.set_ylabel("vr (m/s)")
+    ax4.set_xlim(0.0, 360.0); ax4.grid(True)
     plt.tight_layout()
     plt.show()
