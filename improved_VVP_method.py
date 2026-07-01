@@ -15,6 +15,18 @@ USE_REAL_DATA = True
 
 VERBOSE = False
 
+# Two ways of computing the vertical velocity w, both plotted for comparison :
+# "classic"         -> w = w0, taken directly from the linear VVP fit. Simple,
+#                      but w projects weakly onto vr (especially at low
+#                      elevation) so it is poorly constrained / noisy.
+# "mass_continuity" -> w is rebuilt by vertically integrating the
+#                      (incompressible) continuity equation
+#                      dw/dz = -(du/dx + dv/dy), using the horizontal
+#                      divergence (du/dx, dv/dy) from the fit, which projects
+#                      strongly onto vr and is well constrained. Assumes
+#                      w = 0 at the base (lowest z) of the column being computed.
+W_METHODS = ("classic", "mass_continuity")
+
 # Filter parameters for rejecting non-physical restitutions
 # MAX_WIND is set after data loading : a retrieved wind cannot legitimately
 # exceed the radial velocities it is fitted on (margin 1.5x on the p99.9)
@@ -126,10 +138,12 @@ def solve(G, d, method="ridge", lam=0.1, rcond=1e-10):
         cond = sv[0] / sv[-1] if sv[-1] > 0 else np.inf
         return X, cond
     if method == "ridge":
-        U, s, Vt = np.linalg.svd(G, full_matrices=False)
-        f = s / (s**2 + lam**2)            # facteurs de filtre de Tikhonov
-        X = Vt.T @ (f * (U.T @ d))
-        cond = s[0] / s[-1] if s[-1] > 0 else np.inf
+        # Tikhonov without SVD 
+        # (G^T G + lam^2 I) X = G^T d  ->  X = (G^T G + lam^2 I)^-1 G^T d
+        A = G.T @ G + lam**2 * np.eye(G.shape[1])
+        B = G.T @ d
+        X = np.linalg.solve(A, B)
+        cond = np.linalg.cond(A)
         return X, cond
     
 # --------------------------------------------------------------------------- #
@@ -139,7 +153,7 @@ def solve(G, d, method="ridge", lam=0.1, rcond=1e-10):
 # Half-widths of the volume for selecting the data (km, deg, deg)
 D_R     = 10.0  # km
 D_THETA = 10.0   # deg
-D_PHI   = 15.0   # deg
+D_PHI   = 5.0   # deg #prev 15
 
 min_n = 10  # minimum number of valid data points in the volume to attempt restitution
 
@@ -189,10 +203,8 @@ def retrieve_wind(x0, y0, z0):
          print(f"Point ({x0:.1f}, {y0:.1f}, {z0:.1f}) km : n={n}, cond={cond:.2e}")
  
     # ---- Step 7 : Wind reconstruction ----
-    u0, v0, w0     = X[0], X[1], X[2]
-    #ux, uy, uz  = X[3], X[4], X[5]
-    ux, vy  = X[3], X[4]
-    wz = X[5]  # w'z
+    u0, v0, w0 = X[0], X[1], X[2]
+    ux, vy, wz = X[3], X[4], X[5]   # du/dx, dv/dy, dw/dz (classic fit)
 
     # ---- Filter out unrealistic wind estimates ----
     # Speed excessive
@@ -204,11 +216,60 @@ def retrieve_wind(x0, y0, z0):
     if MAX_COND is not None and cond > MAX_COND:
         return None
 
-    if VERBOSE:
-        print(f"ux={ux:.3e}, uy={uy:.3e}, uz={uz:.3e}")
-        print(f"vy={vy:.3e}, vz={vz:.3e}, wz={wz:.3e}")
+    return u0, v0, w0, wz, ux, vy
 
-    return u0, v0, w0, wz
+
+# --------------------------------------------------------------------------- #
+# 4bis. w BY MASS CONTINUITY : vertical integration of dw/dz = -(du/dx+dv/dy)
+# --------------------------------------------------------------------------- #
+
+def integrate_w_continuity(z_vals, ux_vals, vy_vals):
+    """Given the horizontal divergence (ux+vy) sampled along z_vals (NaN where
+    no retrieval), integrate dw/dz = -(ux+vy) with the trapezoidal rule,
+    imposing w = 0 at the lowest valid level of the column. Returns the w
+    array (NaN wherever it cannot be bridged by >=2 valid consecutive samples)."""
+    z_vals = np.asarray(z_vals, dtype=float)
+    div_h = np.asarray(ux_vals, dtype=float) + np.asarray(vy_vals, dtype=float)
+    w = np.full(z_vals.shape, np.nan)
+
+    idx = np.nonzero(~np.isnan(div_h))[0]
+    if idx.size < 2:
+        return w
+
+    z_v, d_v = z_vals[idx], div_h[idx]
+    w_v = np.concatenate(([0.0], -np.cumsum(0.5 * (d_v[1:] + d_v[:-1]) * np.diff(z_v))))
+    w[idx] = w_v
+    return w
+
+
+def retrieve_wind_column(x0, y0, z_vals, w_method="classic"):
+    """Retrieve (u, v, w, w'z) along a vertical column at fixed (x0, y0), over
+    z_vals. w is computed according to w_method :
+      - "classic"         : w = w0, independently at each level.
+      - "mass_continuity" : w rebuilt from the vertical integration of the
+                            column's horizontal divergence (see
+                            integrate_w_continuity), and w'z = -(ux+vy) is the
+                            local divergence-based derivative.
+    Returns 4 arrays (U, V, W, WZ), same length as z_vals, NaN where missing."""
+    z_vals = np.asarray(z_vals, dtype=float)
+    n = z_vals.size
+    U = np.full(n, np.nan); V = np.full(n, np.nan)
+    W0 = np.full(n, np.nan); WZ0 = np.full(n, np.nan)
+    UX = np.full(n, np.nan); VY = np.full(n, np.nan)
+
+    for i, z0 in enumerate(z_vals):
+        res = retrieve_wind(float(x0), float(y0), float(z0))
+        if res is None:
+            continue
+        U[i], V[i], W0[i], WZ0[i], UX[i], VY[i] = res
+
+    if w_method == "mass_continuity":
+        W = integrate_w_continuity(z_vals, UX, VY)
+        WZ = -(UX + VY)
+    else:
+        W, WZ = W0, WZ0
+
+    return U, V, W, WZ
 
 # %%
 # --------------------------------------------------------------------------- #
@@ -231,7 +292,7 @@ def sweep_workspace(x_vals, y_vals, z_vals, **kwargs):
 X_GRID = np.arange(-90.0, 90.0, 10.0)
 Y_GRID = np.arange(-90.0, 90.0, 10.0)
 Z_GRID = np.arange(1.0, 9.0, 2.0)
- 
+
 xs, ys, zs, winds = sweep_workspace(X_GRID, Y_GRID, Z_GRID)
 print(f"Restitute points : {len(xs)} / {len(X_GRID) * len(Y_GRID) * len(Z_GRID)}")
 
@@ -245,9 +306,10 @@ else:
 # 6. VISUALIZATION : retrieved wind on 4 layers (2x2) + vertical profiles
 # --------------------------------------------------------------------------- #
 
-length_scale = 90  # km
-X_GRID  = np.arange(-length_scale, length_scale, 5.0)
-Y_GRID  = np.arange(-length_scale, length_scale, 5.0)
+length_scale = 45  # km
+A = 2.5
+X_GRID  = np.arange(-length_scale, length_scale, A)
+Y_GRID  = np.arange(-length_scale, length_scale, A)
 DXY, DZ = 2.0, 1.0                      # horizontal / vertical spacing (km)
 #X_GRID = np.arange(6.0, 34.1, DXY)
 #Y_GRID = np.arange(6.0, 56.1, DXY)  
@@ -285,9 +347,19 @@ Ur, Vr = U - U_MEAN, V - V_MEAN
 
 speed = np.hypot(Ur, Vr)
 n_pts = int(np.count_nonzero(~np.isnan(speed)))
-SPEED_MAX = np.nanmax(speed) if np.any(~np.isnan(speed)) else 1.0
 
-pm = ax.pcolormesh(XX, YY, speed, cmap="YlOrRd", alpha=0.65,
+# Color scale : use the SAME upper bound as the true-wind layer plot so identical
+# speeds map to identical colors. The retrieved field only exists inside the radar
+# annulus, so its own max would normalize differently. When the truth is available
+# (synthetic case, real V), take the max of the true |V| over the full grid; else
+# fall back to the retrieved max.
+if (true_wind is not None) and (not REMOVE_MEAN):
+    Ut, Vt, _ = true_wind(XX, YY, Z_LAYER)
+    SPEED_MAX = np.nanmax(np.hypot(Ut, Vt))
+else:
+    SPEED_MAX = np.nanmax(speed) if np.any(~np.isnan(speed)) else 1.0
+
+pm = ax.pcolormesh(XX, YY, speed, cmap="YlOrRd", alpha=0.7,
                    shading="nearest", vmin=0.0, vmax=SPEED_MAX)
 fig.colorbar(pm, ax=ax, label=f"|V{_PRIME}| (m/s)")
 
@@ -317,25 +389,98 @@ ax.set_aspect("equal")
 
 plt.tight_layout()
 
-# --- Vertical profiles at selected points ---
+# %%
+# --------------------------------------------------------------------------- #
+# 6b. VERTICAL CROSS-SECTION : retrieved wind in a vertical plane, |V| in color
+# --------------------------------------------------------------------------- #
+# Slice the 3D field with a vertical plane and color the background by wind
+# speed. SLICE_AXIS="y" -> plane at fixed Y (horizontal axis = X, vertical = Z);
+# SLICE_AXIS="x" -> plane at fixed X (horizontal axis = Y, vertical = Z).
+# In-plane arrows show the (horizontal, w) wind; w is poorly constrained so the
+# vertical component of the arrows is only indicative.
 
-Z_PROFILE_SHOW = False  # set to False to hide the vertical profiles
+SHOW_VSLICE = True
+
+if SHOW_VSLICE:
+    SLICE_AXIS  = "y"          # "y" : plane Y=SLICE_POS ; "x" : plane X=SLICE_POS
+    SLICE_POS   = 0.0          # km, position of the slicing plane
+    H_GRID      = np.arange(-length_scale, length_scale, A)   # in-plane horizontal axis (km)
+    Z_GRID_V    = np.arange(1.0, 9.0, 0.5)                      # vertical axis (km)
+    # arrows are unit-length (direction only) since the color already shows the field ;
+    # larger scale -> SHORTER arrows (matplotlib quiver convention)
+    VSLICE_QUIVER_SCALE = 40
+    # w is poorly constrained in single-Doppler VVP and blows up to non-physical
+    # values : reject any point with |w| > VSLICE_W_MAX (m/s). Set None to disable.
+    VSLICE_W_MAX = 10
+
+    HH, ZZ = np.meshgrid(H_GRID, Z_GRID_V)
+    _hlbl = "X East (km)" if SLICE_AXIS == "y" else "Y North (km)"
+
+    # one panel per w-method (classic | mass_continuity), same axes / color scale
+    figv, axesv = plt.subplots(1, len(W_METHODS), figsize=(9 * len(W_METHODS), 5),
+                               sharex=True, sharey=True)
+    for axv, w_method in zip(np.atleast_1d(axesv), W_METHODS):
+        Uh = np.full((len(Z_GRID_V), len(H_GRID)), np.nan)   # in-plane horizontal comp.
+        Wv = np.full((len(Z_GRID_V), len(H_GRID)), np.nan)   # vertical comp. (color)
+        for ih, h0 in enumerate(H_GRID):
+            if SLICE_AXIS == "y":
+                x0, y0 = h0, SLICE_POS
+            else:
+                x0, y0 = SLICE_POS, h0
+            Ucol, Vcol, Wcol, _ = retrieve_wind_column(x0, y0, Z_GRID_V, w_method)
+            # horizontal wind projected onto the in-plane horizontal direction
+            Uh[:, ih] = Ucol if SLICE_AXIS == "y" else Vcol
+            Wv[:, ih] = Wcol
+
+        # reject non-physical vertical velocities : mask points with |w| > VSLICE_W_MAX
+        if VSLICE_W_MAX is not None:
+            bad = np.abs(Wv) > VSLICE_W_MAX
+            n_rej = int(np.count_nonzero(bad & ~np.isnan(Wv)))
+            n_tot = int(np.count_nonzero(~np.isnan(Wv)))
+            Wv = np.where(bad, np.nan, Wv)
+            Uh = np.where(bad, np.nan, Uh)
+            print(f"V-slice ({w_method}) : {n_rej}/{n_tot} points rejected "
+                  f"(|w| > {VSLICE_W_MAX} m/s)")
+
+        # color = vertical velocity w (signed) -> diverging colormap centered on 0.
+        # scale capped at the rejection threshold so the kept values fill the colormap.
+        W_MAX = VSLICE_W_MAX if VSLICE_W_MAX is not None else (
+            np.nanmax(np.abs(Wv)) if np.any(~np.isnan(Wv)) else 1.0)
+        pmv = axv.pcolormesh(HH, ZZ, Wv, cmap="RdBu_r", alpha=0.9,
+                             shading="nearest", vmin=-W_MAX, vmax=W_MAX)
+        figv.colorbar(pmv, ax=axv, label="w (m/s)")
+
+        # unit-length in-plane arrows : direction only, magnitude is in the background
+        # color. Default angles="uv" -> equal on-screen length regardless of axis scaling.
+        mag = np.hypot(Uh, Wv)
+        mag = np.where(mag > 0, mag, np.nan)
+        axv.quiver(HH, ZZ, Uh / mag, Wv / mag, color="k", width=0.003,
+                   scale=VSLICE_QUIVER_SCALE, pivot="mid")
+        axv.scatter([0], [0], color="k", marker="^", s=60)   # radar at origin (z=0)
+
+        axv.set_title(f"VVP vertical cross-section — {SLICE_AXIS.upper()} = "
+                      f"{SLICE_POS:.0f} km  (w : {w_method})")
+        axv.set_xlabel(_hlbl); axv.set_ylabel("altitude Z (km)")
+        axv.set_xlim(H_GRID[0] - 5, H_GRID[-1] + 5)
+        axv.set_ylim(0.0, Z_GRID_V[-1] + 0.5)
+    plt.tight_layout()
+
+# --- Vertical profile at a single point : one panel per w-method ---
+
+Z_PROFILE_SHOW = True  # set to False to hide the vertical profile
 
 if Z_PROFILE_SHOW:
-    z_profile = np.arange(1.0, 9.0, 0.5)
-    profile_points = [(0.0, 60.0), (40.0, 40.0)]
-    fig2, axes2 = plt.subplots(1, len(profile_points), figsize=(6 * len(profile_points), 5))
+    z_profile = np.arange(0.5, 9.0, 0.5)
+    PROFILE_POINT = (20.0, 20.0)          # (x, y) km of the retrieved column
+    px, py = PROFILE_POINT
 
-    for ax, (px, py) in zip(np.atleast_1d(axes2), profile_points):
-        w_rec, wz_rec = [], []
-        for z0 in z_profile:
-            res = retrieve_wind(px, py, float(z0))
-            w_rec.append(res[2] if res is not None else np.nan)
-            wz_rec.append(res[3] if res is not None else np.nan)
-        w_rec = np.array(w_rec)
-        wz_rec = np.array(wz_rec)
+    # one panel per w-method (classic | mass_continuity), same as the v-slice
+    fig2, axes2 = plt.subplots(1, len(W_METHODS), figsize=(6 * len(W_METHODS), 5),
+                               sharey=True)
+    for ax, w_method in zip(np.atleast_1d(axes2), W_METHODS):
+        _, _, w_rec, wz_rec = retrieve_wind_column(px, py, z_profile, w_method)
 
-        line_w, = ax.plot(w_rec, z_profile, "b--s", label="w restitué")
+        ax.plot(w_rec, z_profile, "b--s", label="retrieved w")
 
         # arrow on each w point : direction of the vertical derivative w'z = dw/dz
         # drawn as the local tangent (dw/dz, 1) over a small altitude step, so the
@@ -344,14 +489,15 @@ if Z_PROFILE_SHOW:
         DZ_ARROW = 0.3                                # altitude step of the arrow (km)
         ax.quiver(w_rec, z_profile, wz_rec * DZ_ARROW, np.full_like(wz_rec, DZ_ARROW),
                   angles="xy", scale_units="xy", scale=1, color="r",
-                  width=0.005, label="sens de w'z")
+                  width=0.005, label="direction of w'z")
 
-        ax.set_title(f"Profil w(z) au point ({px:.0f}, {py:.0f}) km")
+        ax.set_title(f"w(z) at ({px:.0f}, {py:.0f}) km  (w : {w_method})")
         ax.set_xlabel("w (m/s)"); ax.set_ylabel("altitude (km)")
         ax.grid(True)
         ax.legend(loc="best")
 
     plt.tight_layout()
+
 #plt.savefig(f"wind_restitution_vvp_{Z_LAYER}km_12P.png", dpi=300)
 plt.show()
 
@@ -362,7 +508,7 @@ plt.show()
 # Requires the project .venv (Python 3.12 + arm_pyart) :
 # in VSCode, select the ".venv" interpreter/kernel for this file.
 
-SHOW_PPI = True  # set to True to display the PPI plots of the raw radial velocity data using Py-ART
+SHOW_PPI = False  # set to True to display the PPI plots of the raw radial velocity data using Py-ART
 
 if SHOW_PPI:
     PPI_ELEVATION_DEG = 5.47   # desired elevation (deg) : nearest available sweep is shown

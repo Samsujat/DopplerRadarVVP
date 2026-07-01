@@ -22,17 +22,17 @@ import matplotlib.pyplot as plt
 # dérivées spatiales (constantes).
 
 # ---- Composantes du vent à l'origine (0,0,0)  [m/s] ----
-u0, v0, w0 = 4.0, 6.0, 0.0     # vent moyen ~7 m/s du SO
+u0, v0, w0 = 4.0, 6.0, 1.0     # vent moyen ~7 m/s du SO
 
 # ---- Dérivées spatiales du vent  [ (m/s) / km ] ----
 # Champ "pas trop simple" : structure HORIZONTALE (rotation + déformation), donc
 # NON uniforme sur une couche. Aucune variation verticale (dérivées en z = 0) :
 # le champ est identique à toutes les altitudes, et w = 0 partout.
-dudx = 0.15    # du/dx ─┐  divergence horizontale  D = dudx + dvdy = 0 (non divergent)
-dvdy = -0.15   # dv/dy ─┘  -> déformation d'étirement (stretching = dudx - dvdy = 0.30)
-dwdz = 0.0     # dw/dz     (dérivée en z nulle)
-dudy = -0.20   # du/dy ─┐  vorticité verticale = dvdx - dudy = 0.40 (rotation cyclonique)
-dvdx = 0.20    # dv/dx ─┘  déformation de cisaillement = dudy + dvdx = 0
+dudx = 0.05    # du/dx ─┐  divergence horizontale  D = dudx + dvdy = 0 (non divergent)
+dvdy = -0.0   # dv/dy ─┘  -> déformation d'étirement (stretching = dudx - dvdy = 0.30)
+dwdz = -0.05     # dw/dz     (dérivée en z nulle)
+dudy = -0.0   # du/dy ─┐  vorticité verticale = dvdx - dudy = 0.40 (rotation cyclonique)
+dvdx = 0.0    # dv/dx ─┘  déformation de cisaillement = dudy + dvdx = 0
 dudz = 0.0     # du/dz ─┐  dérivées en z nulles : pas de cisaillement vertical
 dvdz = 0.0     # dv/dz ─┘
 dwdx = 0.0     # dw/dx
@@ -91,7 +91,11 @@ if show_layer:
 
     speed = np.hypot(UL, VL)
     fig, ax = plt.subplots(figsize=(8, 7))
-    pm = ax.pcolormesh(XL, YL, speed, cmap="YlOrRd", alpha=0.7, shading="nearest")
+    # Explicit [0, max] color scale (no auto-scale) so the colors match the VVP
+    # retrieval plot, which also normalizes from 0. Otherwise the true-wind plot
+    # would start its white at min(speed) (~6 m/s) instead of 0.
+    pm = ax.pcolormesh(XL, YL, speed, cmap="YlOrRd", alpha=0.7, shading="nearest",
+                       vmin=0.0, vmax=np.nanmax(speed))
     fig.colorbar(pm, ax=ax, label="|V| (m/s)")
     norm = np.where(speed > 0, speed, np.nan)   # flèches unité : direction seule
     ax.quiver(XL, YL, UL / norm, VL / norm, scale=40, width=0.003, color="k")
@@ -106,6 +110,14 @@ if show_layer:
 # --------------------------------------------------------------------------- #
 # 3. GÉNÉRATION DES DONNÉES RADAR DOPPLER
 # --------------------------------------------------------------------------- #
+
+# Écart-type du bruit gaussien ajouté à la vitesse radiale [m/s].
+# Mettre à 0.0 pour des données parfaites (sans bruit).
+NOISE_STD = 1.0
+
+# Graine du générateur aléatoire (None = bruit différent à chaque exécution,
+# un entier pour des résultats reproductibles).
+NOISE_SEED = 123456789
 
 radar_type = 'PAWR'
 
@@ -146,6 +158,12 @@ def generate():
     # 5. Vitesse radiale = projection du vent sur le faisceau
     #    (vecteur unitaire du faisceau : [sth*cphi, cth*cphi, sphi])
     vr = u * (sth * cphi) + v * (cth * cphi) + w * sphi
+
+    # 6. Bruit de mesure : bruit gaussien d'écart-type NOISE_STD (m/s)
+    if NOISE_STD > 0.0:
+        rng = np.random.default_rng(NOISE_SEED)
+        vr = vr + rng.normal(0.0, NOISE_STD, size=vr.shape)
+
     #vr = vr.reshape(len(ELEVATIONS_DEG), len(AZIMUTHS_DEG), len(RANGES_KM))
     return vr
 

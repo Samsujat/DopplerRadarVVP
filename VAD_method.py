@@ -14,7 +14,7 @@ ANELASTIC = True # False -> incompressible dw/dz = -div (standard VAD) ;
 # 0. DATA SOURCES : REAL OR SYNTHETIC   (same block as improved_VVP_method.py)
 # --------------------------------------------------------------------------- #
 
-USE_REAL_DATA = True
+USE_REAL_DATA = False
 
 VERBOSE = False
 
@@ -54,7 +54,7 @@ if USE_REAL_DATA:
     print("True Radar Data : vr shape =", vr.shape,
           "| valid = {:.1f} %".format(100 * np.mean(~np.isnan(vr))))
 else:
-    SYNTHETIC_FIELD = "divergent"      # "generator" | "divergent"
+    SYNTHETIC_FIELD = "generator"      # "generator" | "divergent"
 
     from generate_radar_data import ELEVATIONS_DEG, AZIMUTHS_DEG, RANGES_KM
 
@@ -246,14 +246,17 @@ def integrate_w(z_cent, div, anelastic=ANELASTIC, H=H_RHO):
 
     Incompressible : dw/dz = -DIV.
     Anelastic      : d(rho w)/dz = -rho DIV, with rho = exp(-z / H).
-    NaN divergence bins are linearly interpolated so the integral is continuous.
+    Internal NaN divergence bins are linearly interpolated so the integral is
+    continuous, but w is NOT extrapolated above the highest data-constrained
+    level : there the divergence is unknown, so w is left NaN.
     """
     good = ~np.isnan(div)
     if np.count_nonzero(good) < 2:
         return Z_CENT, np.full_like(Z_CENT, np.nan)
 
     zc = z_cent[good]
-    dv = np.interp(z_cent, zc, div[good])        # fill gaps within the covered range
+    z_top = zc.max()                             # highest altitude with a real divergence
+    dv = np.interp(z_cent, zc, div[good])        # fill internal gaps within the covered range
 
     # prepend the ground point (z=0, w=0)
     z = np.insert(z_cent, 0, 0.0)
@@ -264,6 +267,10 @@ def integrate_w(z_cent, div, anelastic=ANELASTIC, H=H_RHO):
     incr = 0.5 * (rho[1:] * dv[1:] + rho[:-1] * dv[:-1]) * np.diff(z)
     integ = np.concatenate([[0.0], np.cumsum(incr)])
     w = -integ / rho
+
+    # stop w where the divergence stops : above z_top it would be pure
+    # extrapolation of the last divergence value, not a measurement.
+    w[z > z_top] = np.nan
     return z, w
 
 
