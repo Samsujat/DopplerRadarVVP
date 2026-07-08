@@ -113,7 +113,7 @@ if show_layer:
 
 # Écart-type du bruit gaussien ajouté à la vitesse radiale [m/s].
 # Mettre à 0.0 pour des données parfaites (sans bruit).
-NOISE_STD = 1.0
+NOISE_STD = 2.0
 
 # Graine du générateur aléatoire (None = bruit différent à chaque exécution,
 # un entier pour des résultats reproductibles).
