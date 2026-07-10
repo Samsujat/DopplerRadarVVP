@@ -40,9 +40,9 @@ if USE_REAL_DATA:
     from Data_Radar.Wada_mppawr_online import mppawr
 
     VELOCITY_FILE = (
-        "Data_Radar/20240711_Z_V_W_HV_MTI/20240711_01_VH_MTI/"
-        "Volumes/HD-PCFSU3-A/RAW/2024.07.11/01/"
-        "20240711_010000.00-00-PPI.RAW-VH_MTI.NSK-AUTO-LEM2.suita.dat.gz"
+        "Data_Radar/20240711_Z_V_W_HV_MTI/20240711_00_VH_MTI/"
+        "Volumes/HD-PCFSU3-A/RAW/2024.07.11/00/"
+        "20240711_000000.00-00-PPI.RAW-VH_MTI.NSK-AUTO-LEM2.suita.dat.gz"
     )
 
     RANGE_MAX_KM = 80.0   # km
@@ -61,7 +61,10 @@ if USE_REAL_DATA:
     vr = data.astype(float)
     vr[vr < -200.0] = np.nan
     # Organization -> (azimuth, elevation, range) -> (elevation, azimuth, range)
-    vr = -np.transpose(vr, (1, 0, 2))
+    # NB : the VH data is already "radial_velocity_of_scatterers_away_from
+    # _instrument" (positive away), the convention assumed by the VVP design
+    # matrix -- do NOT negate it (the old "-" flipped u, v, divergence and w)
+    vr = np.transpose(vr, (1, 0, 2))
 
     # range limitation 
     keep = RANGES_KM <= RANGE_MAX_KM
@@ -155,8 +158,8 @@ def solve(G, d, method="direct", lam=0.1, rcond=1e-10):
 # --------------------------------------------------------------------------- #
 
 # Half-widths of the volume for selecting the data (km, deg, deg)
-D_R     = 10.0  # km
-D_THETA = 10.0   # deg
+D_R     = 10.0  # km 10
+D_THETA = 10.0   # deg 10
 D_PHI   = 5.0   # deg #prev 15
 
 min_n = 10  # minimum number of valid data points in the volume to attempt restitution
@@ -183,7 +186,7 @@ def retrieve_wind(x0, y0, z0):
     if ie.size == 0 or ia.size == 0 or ir.size == 0:
         return None
 
-    sub = vr[np.ix_(ie, ia, ir)]      # small sub-volume of radial velocities
+    sub = vr[np.ix_(ie, ia, ir)]  # small sub-volume of vr
     valid = ~np.isnan(sub)
     n = np.count_nonzero(valid)
     if n < min_n:
@@ -228,13 +231,17 @@ def retrieve_wind(x0, y0, z0):
 #       d(rho w)/dz = -rho (du/dx+dv/dy), rho = rho0 * exp(-z/H_RHO)
 # --------------------------------------------------------------------------- #
 
-def integrate_w_continuity(z_vals, ux_vals, vy_vals):
+def integrate_w_continuity(z_vals, ux_vals, vy_vals, obrien=True):
     """Given the horizontal divergence (ux+vy) sampled along z_vals (NaN where
     no retrieval), integrate the anelastic continuity equation
     d(rho w)/dz = -rho (ux+vy), with rho = rho0 * exp(-z / H_RHO), using the
     trapezoidal rule and imposing w = 0 at the lowest valid level of the
-    column (rho0 cancels out). Returns the w array (NaN wherever it cannot be
-    bridged by >=2 valid consecutive samples)."""
+    column AND, if obrien, at its top (O'Brien 1970 correction : the closure
+    residual is removed as a divergence error growing linearly with the layer
+    index k, so the upper levels, the least reliable, absorb most of it).
+    obrien=False keeps the raw upward integration (w=0 at the base only).
+    Returns the w array (NaN wherever it cannot be bridged by >=2 valid
+    samples)."""
     z_vals = np.asarray(z_vals, dtype=float)
     div_h = np.asarray(ux_vals, dtype=float) + np.asarray(vy_vals, dtype=float)
     w = np.full(z_vals.shape, np.nan)
@@ -248,11 +255,17 @@ def integrate_w_continuity(z_vals, ux_vals, vy_vals):
     # rho w (z) = - cumulative integral of rho * div_h, then w = (rho w) / rho
     rho_d = rho_v * d_v
     rho_w = np.concatenate(([0.0], -np.cumsum(0.5 * (rho_d[1:] + rho_d[:-1]) * np.diff(z_v))))
+    if obrien:
+        # O'Brien (1970) correction : also impose w = 0 at the top of the column
+        k_w = np.arange(1, z_v.size + 1, dtype=float)
+        i_k = np.concatenate(([0.0],
+            np.cumsum(0.5 * (k_w[1:] * rho_v[1:] + k_w[:-1] * rho_v[:-1]) * np.diff(z_v))))
+        rho_w -= rho_w[-1] / i_k[-1] * i_k
     w[idx] = rho_w / rho_v
     return w
 
 
-def retrieve_wind_column(x0, y0, z_vals, w_method="classic"):
+def retrieve_wind_column(x0, y0, z_vals, w_method="classic", obrien=True):
     """Retrieve (u, v, w, w'z) along a vertical column at fixed (x0, y0), over
     z_vals. w is computed according to w_method :
       - "classic"         : w = w0, independently at each level.
@@ -275,7 +288,7 @@ def retrieve_wind_column(x0, y0, z_vals, w_method="classic"):
         U[i], V[i], W0[i], WZ0[i], UX[i], VY[i] = res
 
     if w_method == "mass_continuity":
-        W = integrate_w_continuity(z_vals, UX, VY)
+        W = integrate_w_continuity(z_vals, UX, VY, obrien=obrien)
         # anelastic : dw/dz = -(ux+vy) + w / H_RHO
         WZ = -(UX + VY) + W / H_RHO
     else:
@@ -325,7 +338,7 @@ Y_GRID  = np.arange(-length_scale, length_scale, A)
 DXY, DZ = 2.0, 1.0                      # horizontal / vertical spacing (km)
 #X_GRID = np.arange(6.0, 34.1, DXY)
 #Y_GRID = np.arange(6.0, 56.1, DXY)  
-Z_LAYER = 2.5             # altitude of the displayed layer (km)
+Z_LAYER = 4             # altitude of the displayed layer (km)
 QUIVER_SCALE = 40         # scale for unit-length quiver arrows
 # REMOVE_MEAN = True  -> plot the wind ANOMALY V' = V - mean : the ~uniform mean
 #                       flow dominates and is removed, so the vortex / divergence
@@ -410,7 +423,7 @@ plt.tight_layout()
 # SLICE_AXIS="x" -> plane at fixed X (horizontal axis = Y, vertical = Z).
 # In-plane arrows show the (horizontal, w) wind; w is poorly constrained so the
 # vertical component of the arrows is only indicative.
-PROFILE_POINT = (-20, 25)          # (x, y) km of the retrieved column
+PROFILE_POINT = (-20, 15.5)          # (x, y) km of the retrieved column
 
 SHOW_VSLICE = True
 
@@ -493,7 +506,19 @@ if Z_PROFILE_SHOW:
     for ax, w_method in zip(np.atleast_1d(axes2), W_METHODS):
         _, _, w_rec, wz_rec = retrieve_wind_column(px, py, z_profile, w_method)
 
-        ax.plot(w_rec, z_profile, "b--s", label="retrieved w")
+        if w_method == "mass_continuity":
+            # same integration WITHOUT the O'Brien top closure : the gap
+            # between the two curves is the closure residual redistributed
+            # by the correction (it grows with altitude)
+            _, _, w_raw, _ = retrieve_wind_column(px, py, z_profile, w_method,
+                                                  obrien=False)
+            ax.plot(w_raw, z_profile, "g--o", mfc="none",
+                    label="w without O'Brien (w=0 at base only)")
+            _wlbl = "w with O'Brien (w=0 at base and top)"
+        else:
+            _wlbl = "retrieved w"
+
+        ax.plot(w_rec, z_profile, "b--s", label=_wlbl)
 
         # arrow on each w point : direction of the vertical derivative w'z = dw/dz
         # drawn as the local tangent (dw/dz, 1) over a small altitude step, so the
@@ -523,7 +548,7 @@ if Z_PROFILE_SHOW:
 # showing where the retrieved column sits in the cross-section (ground
 # distance s0, altitudes z_profile).
 
-SHOW_PROFILE_RHI = True
+SHOW_PROFILE_RHI = True  # set to True to show the RHI through the profile point
 
 if SHOW_PROFILE_RHI and USE_REAL_DATA:
     REFLECTIVITY_FILE = (
@@ -623,7 +648,7 @@ if SHOW_PROFILE_RHI and USE_REAL_DATA:
 # Requires scikit-image (marching cubes) and scipy (smoothing).
 # Reuses the ZH volume loaded in section 6c.
 
-SHOW_3D_ISO = True
+SHOW_3D_ISO = False
 
 if SHOW_3D_ISO and SHOW_PROFILE_RHI and USE_REAL_DATA:
     from scipy.ndimage import gaussian_filter
@@ -823,7 +848,7 @@ if SHOW_PPI:
     radar_ppi.fields["velocity"] = {
         "data": np.ma.masked_invalid(vr.reshape(n_elv * n_azim, n_rng)),
         "units": "m/s",
-        "long_name": "Radial velocity (towards radar positive)",
+        "long_name": "Radial velocity (away from radar positive)",
         "standard_name": "radial_velocity",
     }
 

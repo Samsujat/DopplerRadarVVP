@@ -45,7 +45,7 @@ if USE_REAL_DATA:
         radar.close()
         v = data.astype(float)
         v[v < -200.0] = np.nan
-        v = -np.transpose(v, (1, 0, 2))           # -> (elevation, azimuth, range)
+        v = np.transpose(v, (1, 0, 2))            # -> (elevation, azimuth, range)
         keep = rng_km <= RANGE_MAX_KM
         return v[:, :, keep], elev, azim, rng_km[keep]
 
@@ -291,7 +291,7 @@ x_disp = np.arange(RADAR1_POS[0] - 30.0, RADAR2_POS[0] + 30.1, 1.0)
 y_disp = np.arange(-60.0, 60.1, 1.0)
 XD, YD = np.meshgrid(x_disp, y_disp, indexing="ij")
 
-show_beta_map = False
+show_beta_map = True
 
 if show_beta_map:
 

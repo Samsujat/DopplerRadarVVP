@@ -40,7 +40,7 @@ ELEVATIONS_DEG = np.array([0.5, 1.5, 2.4, 3.4, 4.3, 5.3, 6.2, 7.5, 8.7,
 AZIMUTHS_DEG = np.arange(0.0, 360.0, 1.0)   # 360 rays, 1 deg step
 RANGES_KM = np.arange(1.0, 80.0, 0.5)       # gates from 1 to 80 km, 500 m step
 
-NOISE_STD = 1.0   # Gaussian noise on vr (m/s) -> error propagation study
+NOISE_STD = 5.0   # Gaussian noise on vr (m/s) -> error propagation study
 
 
 # w(z) is analytically zero AT THE GROUND AND AT Z_W < Z_TOP: both boundary

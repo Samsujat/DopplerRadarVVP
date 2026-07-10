@@ -43,7 +43,7 @@ if USE_REAL_DATA:
     vr = data.astype(float)
     vr[vr < -200.0] = np.nan
     # Organization -> (azimuth, elevation, range) -> (elevation, azimuth, range)
-    vr = -np.transpose(vr, (1, 0, 2))
+    vr = np.transpose(vr, (1, 0, 2))
 
     # range limitation
     keep = RANGES_KM <= RANGE_MAX_KM
